@@ -1,16 +1,2 @@
-# Requirements for running notebooks
+# Install the package in editable mode (test extras: pip install -e .[test])
 -e .
-
-# For running tests
-# nose
-
-# For neural network examples
-# keras
-# tensorflow
-# torch
-# torchvision
-
-# For decision tree examples
-# xgboost
-# catboost
-# lightgbm
