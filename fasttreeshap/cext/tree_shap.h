@@ -1214,15 +1214,32 @@ inline void tree_shap_recursive_v3(const TreeShapV3Context &ctx, unsigned node_i
             const unsigned f = path[i].feature_index;
             const unsigned bm = 1u << (i - 1);
             const tfloat c1 = 1 - path[i].zero_fraction;
-            for (unsigned j = 0; j < ctx.num_outputs; ++j) {
-                const tfloat v = ctx.values[values_offset + j];
+            if (ctx.num_outputs == 1) {
+                const tfloat v = ctx.values[values_offset];
                 if (v == 0) continue;                            // adding 0.0 is a no-op; skip the pass
-                tfloat *phi_f = ctx.phi_t + (f * ctx.num_outputs + j) * num_X;
+                tfloat *phi_f = ctx.phi_t + f * num_X;
                 for (unsigned m = 0; m < num_X; ++m) {
                     const unsigned k = K_row[m];
                     const tfloat scale = (k & bm) ? S[k - bm] * R_row[m] * c1
                                                   : -S[k] * R_row[m];
                     phi_f[m] += scale * v;
+                }
+            } else {
+                // scale is output-independent: compute once, reuse for every output.
+                // R's next level is free scratch here — a leaf has no children.
+                tfloat *scale_row = ctx.R + (row + 1) * num_X;
+                for (unsigned m = 0; m < num_X; ++m) {
+                    const unsigned k = K_row[m];
+                    scale_row[m] = (k & bm) ? S[k - bm] * R_row[m] * c1
+                                            : -S[k] * R_row[m];
+                }
+                for (unsigned j = 0; j < ctx.num_outputs; ++j) {
+                    const tfloat v = ctx.values[values_offset + j];
+                    if (v == 0) continue;                        // adding 0.0 is a no-op; skip the pass
+                    tfloat *phi_f = ctx.phi_t + (f * ctx.num_outputs + j) * num_X;
+                    for (unsigned m = 0; m < num_X; ++m) {
+                        phi_f[m] += scale_row[m] * v;
+                    }
                 }
             }
         }
@@ -1246,23 +1263,20 @@ inline void tree_shap_recursive_v3(const TreeShapV3Context &ctx, unsigned node_i
         incoming_zero_fraction = path[path_index].zero_fraction;
         const unsigned inc_bm = 1u << (path_index - 1);
 
-        // capture the per-sample incoming bit BEFORE splicing it out of K
-        for (unsigned m = 0; m < num_X; ++m) INC_row[m] = (K_row[m] & inc_bm) ? 1 : 0;
-
         // remove the duplicated element from the scalar path (local copy — no undo needed)
         for (unsigned i = path_index; i < unique_depth; ++i) path[i] = path[i + 1];
         unique_depth -= 1;
 
-        // splice the duplicated bit out of every sample's subset index
+        // one pass per sample: capture the incoming bit, splice it out of the
+        // subset index, and divide the residual where the sample failed the split
         const unsigned low_mask = inc_bm - 1;
-        for (unsigned m = 0; m < num_X; ++m) {
-            const unsigned k = K_row[m];
-            K_row[m] = (k & low_mask) | ((k >> path_index) << (path_index - 1));
-        }
-        // residual division where the sample failed the duplicated split
         const tfloat izf = incoming_zero_fraction;
         for (unsigned m = 0; m < num_X; ++m) {
-            if (!INC_row[m]) R_row[m] /= izf;
+            const unsigned k = K_row[m];
+            const unsigned char inc = (k & inc_bm) ? 1 : 0;
+            INC_row[m] = inc;
+            K_row[m] = (k & low_mask) | ((k >> path_index) << (path_index - 1));
+            if (!inc) R_row[m] /= izf;
         }
     }
 
