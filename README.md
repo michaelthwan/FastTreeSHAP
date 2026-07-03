@@ -1,131 +1,80 @@
-# FastTreeSHAP
+# FastTreeSHAP — performance fork
 
-[![PyPI Version](https://badge.fury.io/py/fasttreeshap.svg)](https://pypi.org/project/fasttreeshap)
-[![Downloads](https://pepy.tech/badge/fasttreeshap)](https://pepy.tech/project/fasttreeshap)
+> Exact TreeSHAP, **13–17× faster than the [`shap`](https://github.com/slundberg/shap) package on a single core** — 100×+ with all cores — while producing SHAP values that are identical to `shap`'s within floating-point noise (measured max difference ~1e-14).
 
-FastTreeSHAP package is built based on the paper [Fast TreeSHAP: Accelerating SHAP Value Computation for Trees](https://arxiv.org/abs/2109.09847) published in [NeurIPS 2021 XAI4Debugging Workshop](https://xai4debugging.github.io/). It is a fast implementation of the [TreeSHAP](https://arxiv.org/abs/1802.03888) algorithm in the [SHAP](https://github.com/slundberg/shap) package.
+This is a performance-focused fork of [linkedin/FastTreeSHAP](https://github.com/linkedin/FastTreeSHAP) (the reference implementation of the [Fast TreeSHAP paper](https://arxiv.org/abs/2109.09847), NeurIPS 2021 XAI4Debugging). On top of the paper's v1/v2 algorithms it adds:
 
-For more detailed introduction of FastTreeSHAP package, please check out this [blogpost](https://engineering.linkedin.com/blog/2022/fasttreeshap--accelerating-shap-value-computation-for-trees).
+- **v3 "batched descent"** — a new execution model. Every earlier TreeSHAP variant re-walks each tree once *per sample*; v3 walks each tree **once**, carrying all samples through the traversal as vectors. Same exact math, applied in the same order — so the output is bitwise equal to v2's — but traversal cost is amortized over the batch and the hot loops become dense and branchless.
+- **An optimized v2** (~1.4× over the published v2): incremental subset indexing, copy-free backtracking traversal, and slimmer recursion frames.
+- **Working OpenMP on Windows** — the original build passed GCC's `-fopenmp` to MSVC, which silently ignored it; stock Windows builds were single-threaded.
 
-## Introduction
+## Benchmarks
 
-[SHAP](https://arxiv.org/abs/1705.07874) (SHapley Additive exPlanation) values are one of the leading tools for interpreting machine learning models. Even though computing SHAP values takes exponential time in general, TreeSHAP takes polynomial time on tree-based models (e.g., decision trees, random forest, gradient boosted trees). While the speedup is significant, TreeSHAP can still dominate the computation time of industry-level machine learning solutions on datasets with millions or more entries.
+sklearn RandomForestClassifier, 100 trees, 2,000 [Adult](https://archive.ics.uci.edu/ml/datasets/census+income) samples, AMD Ryzen 9 7900X, single core unless noted, vs `shap` 0.45:
 
-In FastTreeSHAP package we implement two new algorithms, FastTreeSHAP v1 and FastTreeSHAP v2, designed to improve the computational efficiency of TreeSHAP for large datasets. We empirically find that Fast TreeSHAP v1 is **1.5x** faster than TreeSHAP while keeping the memory cost unchanged, and Fast TreeSHAP v2 is **2.5x** faster than TreeSHAP, at the cost of a slightly higher memory usage (performance is measured on a single core).
+|Tree depth|shap (native)|FastTreeSHAP v2 (this fork)|**FastTreeSHAP v3 (this fork)**|v3 · 24 threads|
+|---------:|------------:|--------------------------:|------------------------------:|--------------:|
+|8|3.63s|0.92s (4.0×)|**0.24s (15.1×)**|0.04s (~91×)|
+|12|26.21s|7.67s (3.4×)|**1.57s (16.7×)**|0.16s (~164×)|
 
-The table below summarizes the time and space complexities of each variant of TreeSHAP algorithm (<img src="https://latex.codecogs.com/svg.latex?M"/> is the number of samples to be explained, <img src="https://latex.codecogs.com/svg.latex?N"/> is the number of features, <img src="https://latex.codecogs.com/svg.latex?T"/> is the number of trees, <img src="https://latex.codecogs.com/svg.latex?L"/> is the maximum number of leaves in any tree, and <img src="https://latex.codecogs.com/svg.latex?D"/> is the maximum depth of any tree). Note that the (theoretical) average running time of FastTreeSHAP v1 is reduced to 25% of TreeSHAP.
-|TreeSHAP Version|Time Complexity|Space Complexity|
-|:---------------|--------------:|---------------:|
-|TreeSHAP|<img src="https://latex.codecogs.com/svg.latex?O(MTLD^2)"/>|<img src="https://latex.codecogs.com/svg.latex?O(D^2+N)"/>|
-|FastTreeSHAP v1|<img src="https://latex.codecogs.com/svg.latex?O(MTLD^2)"/>|<img src="https://latex.codecogs.com/svg.latex?O(D^2+N)"/>|
-|FastTreeSHAP v2 (general case)|<img src="https://latex.codecogs.com/svg.latex?O(TL2^DD+MTLD)"/>|<img src="https://latex.codecogs.com/svg.latex?O(L2^D)"/>|
-|FastTreeSHAP v2 (balanced trees)|<img src="https://latex.codecogs.com/svg.latex?O(TL^2D+MTLD)"/>|<img src="https://latex.codecogs.com/svg.latex?O(L^2)"/>|
-
-## Performance with Parallel Computing
-
-Parallel computing is fully enabled in FastTreeSHAP package. As a comparison, parallel computing is not enabled in [SHAP](https://github.com/slundberg/shap) package except for "shortcut" which calls TreeSHAP algorithms embedded in [XGBoost](https://github.com/dmlc/xgboost), [LightGBM](https://github.com/microsoft/LightGBM), and [CatBoost](https://github.com/catboost/catboost) packages specifically for these three models.
-
-The table below compares the execution times of FastTreeSHAP v1 and FastTreeSHAP v2 in FastTreeSHAP package against TreeSHAP algorithm (or "shortcut") in [SHAP](https://github.com/slundberg/shap) package on two datasets [Adult](https://archive.ics.uci.edu/ml/datasets/census+income) (binary classification) and [Superconductor](https://archive.ics.uci.edu/ml/datasets/superconductivty+data) (regression). All the evaluations were run in parallel on all available cores in Azure Virtual Machine with size Standard_D8_v3 (8 cores and 32GB memory) (except for [scikit-learn](https://scikit-learn.org) models in [SHAP](https://github.com/slundberg/shap) package). We ran each evaluation on 10,000 samples, and the results were averaged over 3 runs.
-|Model|# Trees|Tree<br>Depth|Dataset|SHAP (s)|FastTree- <br>SHAP v1 (s)|Speedup|FastTree- <br>SHAP v2 (s)|Speedup|
-|:----|------:|---------:|------:|-------:|---------------------:|------:|---------------------:|------:|
-|sklearn random forest|500|8|Adult|318.44\*|43.89|**7.26**|27.06|**11.77**|
-|sklearn random forest|500|8|Super|466.04|58.28|**8.00**|36.56|**12.75**|
-|sklearn random forest|500|12|Adult|2446.12|293.75|**8.33**|158.93|**15.39**|
-|sklearn random forest|500|12|Super|5282.52|585.85|**9.02**|370.09|**14.27**|
-|XGBoost|500|8|Adult|17.35\*\*|12.31|**1.41**|6.53|**2.66**|
-|XGBoost|500|8|Super|35.31|21.09|**1.67**|13.00|**2.72**|
-|XGBoost|500|12|Adult|62.19|40.31|**1.54**|21.34|**2.91**|
-|XGBoost|500|12|Super|152.23|82.46|**1.85**|51.47|**2.96**|
-|LightGBM|500|8|Adult|7.64\*\*\*|7.20|**1.06**|3.24|**2.36**|
-|LightGBM|500|8|Super|8.73|7.11|**1.23**|3.58|**2.44**|
-|LightGBM|500|12|Adult|9.95|7.96|**1.25**|4.02|**2.48**|
-|LightGBM|500|12|Super|14.02|11.14|**1.26**|4.81|**2.91**|
-
-\* Parallel computing is not enabled in SHAP package for scikit-learn models, thus TreeSHAP algorithm runs on a single core.\
-\*\* SHAP package calls TreeSHAP algorithm in XGBoost package, which by default enables parallel computing on all cores.\
-\*\*\* SHAP package calls TreeSHAP algorithm in LightGBM package, which by default enables parallel computing on all cores.
-
-## Additional FastTreeSHAP v2 Optimizations
-
-This fork further optimizes the FastTreeSHAP v2 C++ implementation while producing **bit-identical SHAP values** (verified against the SHAP package at atol=1e-8 on binary/multiclass classification, regression, and gradient boosting models):
-
-* **Incremental combination-sum indexing** — the index into the precomputed combination-sum table is maintained incrementally during tree descent (O(1) per leaf) instead of being recomputed with an O(depth) loop at every leaf.
-* **Backtracking path traversal** — the recursion mutates a single shared path array and undoes prefix modifications on return, instead of copying the parent path (O(depth)) at every node.
-* **Context-struct recursion** (`v2-ctx-struct`) — the 14 loop-invariant arguments are packed into a context struct, so each recursive call passes 8 arguments instead of 21, shrinking call frames in the hot recursion.
-* **Dynamic OpenMP scheduling** on the parallel-over-trees loops, plus MSVC OpenMP support (`/openmp:llvm`), which the original build silently lacked on Windows.
-
-Measured on sklearn random forests (100 trees, 2,000 [Adult](https://archive.ics.uci.edu/ml/datasets/census+income) samples, AMD Ryzen 9 7900X, single core unless noted), against the SHAP package v0.45:
-
-|Tree Depth|SHAP (native)|FastTreeSHAP v2 (original)|FastTreeSHAP v2 (optimized)|Speedup vs native|Optimized + 24 threads|
-|---------:|------------:|-------------------------:|--------------------------:|----------------:|---------------------:|
-|8|3.63s|1.28s (2.84x)|0.92s|**3.95x**|0.09s (~40x)|
-|12|26.21s|10.29s (2.55x)|7.67s|**3.42x**|0.56s (~47x)|
-
-## FastTreeSHAP v3 (Batched Descent)
-
-This fork also adds a new algorithm, `algorithm="v3"`, that changes the execution model rather than the leaf math: v0–v2 all re-walk each tree once per sample, but along any root-to-leaf path the path structure (features, zero-fractions, duplicate removals) is sample-independent — the only per-sample state is one pass/fail bit per split and a running residual. v3 therefore walks each tree **once**, carrying all samples through the traversal as vectors (subset-index bits, residuals, branch bits) updated in dense loops over the batch. It applies the identical per-sample arithmetic in the identical order as v2, so its output is **bitwise equal** to v2's (and matches the SHAP package within floating-point noise). Same complexity and memory as v2 (O(L·2^D) precompute table); parallelism goes over trees with per-thread output buffers.
-
-Measured on the same setup as above:
-
-|Tree Depth|SHAP (native)|FastTreeSHAP v2 (optimized)|FastTreeSHAP v3|Speedup vs native|v3 + 24 threads|
-|---------:|------------:|--------------------------:|--------------:|----------------:|--------------:|
-|8|3.63s|0.92s (3.95x)|0.24s|**15.1x**|0.04s (~91x)|
-|12|26.21s|7.67s (3.42x)|1.57s|**16.7x**|0.16s (~164x)|
-
-```python
-shap_values = fasttreeshap.TreeExplainer(model, algorithm="v3", n_jobs=-1).shap_values(X)
-```
+Speedups grow with tree depth and batch size. Full experiment history (including rejected optimizations) is in [speedup_report.html](speedup_report.html); an interactive explainer of how each algorithm generation works is in [algorithm_report.html](algorithm_report.html).
 
 ## Installation
 
-FastTreeSHAP package is available on PyPI and can be installed with pip:
+Not yet on PyPI — install from source (requires a C++ compiler; MSVC on Windows, GCC/Clang elsewhere, `brew install libomp` on macOS):
 
 ```sh
-pip install fasttreeshap
-```
-
-Installation troubleshooting:
-* On Macbook, if an error message `ld: library not found for -lomp` pops up, run the following command line before installation ([Reference](https://iscinumpy.gitlab.io/post/omp-on-high-sierra)):
-```sh
-brew install libomp
+pip install git+https://github.com/michaelthwan/FastTreeSHAP.git@v2-speedup
 ```
 
 ## Usage
 
-The following screenshot shows a typical use case of FastTreeSHAP on [Census Income Data](https://archive.ics.uci.edu/ml/datasets/census+income). Note that the usage of FastTreeSHAP is exactly the same as the usage of [SHAP](https://github.com/slundberg/shap), except for four additional arguments in the class `TreeExplainer`: `algorithm`, `n_jobs`, `memory_tolerance`, and `shortcut`.
+Drop-in replacement for `shap.TreeExplainer` — same API, same outputs:
 
-`algorithm`: This argument specifies the TreeSHAP algorithm used to run FastTreeSHAP. It can take values `"v0"`, `"v1"`, `"v2"` or `"auto"`, and its default value is `"auto"`:
-* `"v0"`: Original TreeSHAP algorithm in [SHAP](https://github.com/slundberg/shap) package.
-* `"v1"`: FastTreeSHAP v1 algorithm proposed in [FastTreeSHAP](https://arxiv.org/abs/2109.09847) paper.
-* `"v2"`: FastTreeSHAP v2 algorithm proposed in [FastTreeSHAP](https://arxiv.org/abs/2109.09847) paper.
-* `"auto"` (default): Automatic selection between `"v0"`, `"v1"` and `"v2"` according to the number of samples to be explained and the constraint on the allocated memory. Specifically, `"v1"` is always preferred to `"v0"` in any use cases, and `"v2"` is preferred to `"v1"` when the number of samples to be explained is sufficiently large (<img src="https://latex.codecogs.com/svg.latex?M>2^{D+1}/D"/>), and the memory constraint is also satisfied (<img src="https://latex.codecogs.com/svg.latex?min\{(MN+L2^D){\cdot}C,\;TL2^D\}\cdot8Byte<0.25{\cdot}Total\,Memory"/>, <img src="https://latex.codecogs.com/svg.latex?C"/> is the number of threads). More detailed discussion of the above criteria can be found in [FastTreeSHAP](https://arxiv.org/abs/2109.09847) paper and in Section [Notes](#notes).
+```python
+import fasttreeshap
 
-`n_jobs`: This argument specifies the number of parallel threads used to run FastTreeSHAP. It can take values `-1` or a positive integer. Its default value is `-1`, which means utilizing all available cores in parallel computing.
+explainer = fasttreeshap.TreeExplainer(model, algorithm="v3", n_jobs=-1)
 
-`memory_tolerance`: This argument specifies the upper limit of memory allocation (in GB) to run FastTreeSHAP v2. It can take values `-1` or a positive number. Its default value is `-1`, which means allocating a maximum of 0.25 * total memory of the machine to run FastTreeSHAP v2.
+shap_values = explainer.shap_values(X)   # ndarray (n_samples, n_features), or a list per class
+explanation = explainer(X)               # Explanation object, works with shap's plotting API
+```
 
-`shortcut`: This argument determines whether to use the TreeSHAP algorithm embedded in [XGBoost](https://github.com/dmlc/xgboost), [LightGBM](https://github.com/microsoft/LightGBM), and [CatBoost](https://github.com/catboost/catboost) packages directly when computing SHAP values for XGBoost, LightGBM, and CatBoost models and when computing SHAP interaction values for XGBoost models. Its default value is `False`, which means bypassing the "shortcut" and using the code in FastTreeSHAP package directly to compute SHAP values for XGBoost, LightGBM, and CatBoost models. Note that currently `shortcut` is automaticaly set to be True for CatBoost model, as we are working on CatBoost component in FastTreeSHAP package. More details of the usage of "shortcut" can be found in the notebooks [Census Income](notebooks/FastTreeSHAP_Census_Income.ipynb), [Superconductor](notebooks/FastTreeSHAP_Superconductor.ipynb), and [Crop Mapping](notebooks/FastTreeSHAP_Crop_Mapping.ipynb).
+Supported models: scikit-learn tree ensembles (RandomForest, ExtraTrees, GradientBoosting, DecisionTree), XGBoost, LightGBM, CatBoost, and PySpark tree models.
 
-![FastTreeSHAP Adult Screenshot1](docs/images/fasttreeshap_adult_screenshot1.png)
+### Choosing an algorithm
 
-The code in the following screenshot was run on all available cores in a Macbook Pro (2.4 GHz 8-Core Intel Core i9 and 32GB Memory). We see that both `"v1"` and `"v2"` produce exactly the same SHAP value results as `"v0"`. Meanwhile, `"v2"` has the shortest execution time, followed by `"v1"`, and then `"v0"`. `"auto"` selects `"v2"` as the most appropriate algorithm in this use case as desired. For more detailed comparisons between FastTreeSHAP v1, FastTreeSHAP v2 and the original TreeSHAP, check the notebooks [Census Income](notebooks/FastTreeSHAP_Census_Income.ipynb), [Superconductor](notebooks/FastTreeSHAP_Superconductor.ipynb), and [Crop Mapping](notebooks/FastTreeSHAP_Crop_Mapping.ipynb).
+| `algorithm=` | When to use |
+|---|---|
+| `"v3"` **(recommended)** | Explaining a batch of samples (the more samples, the bigger the win). Needs the same per-thread precompute table as v2: `L·2^D` doubles per tree (~32 KB per leaf at depth 12) — fine up to depth ~14. |
+| `"v2"` | Same table cost as v3; useful mainly as a reference or for tiny batches. |
+| `"v1"` | Low memory (O(D²)) — the fallback for very deep trees or tight memory. |
+| `"auto"` (default) | Conservatively picks v1/v2 based on batch size and available memory. It does **not** yet select v3 — pass `"v3"` explicitly. |
 
-![FastTreeSHAP Adult Screenshot2](docs/images/fasttreeshap_adult_screenshot2.png)
+All algorithms produce the same SHAP values; the choice only affects speed and memory.
 
-## Notes
+### Key parameters
 
-* In [FastTreeSHAP](https://arxiv.org/abs/2109.09847) paper, two scenarios in model interpretation use cases have been discussed: one-time usage (explaining all samples for once), and multi-time usage (having a stable model in the backend and receiving new scoring data to be explained on a regular basis). Current version of FastTreeSHAP package only supports one-time usage scenario, and we are working on extending it to multi-time usage scenario with parallel computing. Evaluation results in [FastTreeSHAP](https://arxiv.org/abs/2109.09847) paper shows that FastTreeSHAP v2 can achieve as high as 3x faster explanation in multi-time usage scenario.
-* The implementation of parallel computing is straightforward for FastTreeSHAP v1 and the original TreeSHAP, where a parallel for-loop is built over all samples. The implementation of parallel computing for FastTreeSHAP v2 is slightly more complicated: Two versions of parallel computing have been implemented. Version 1 builds a parallel for-loop over all trees, which requires <img src="https://latex.codecogs.com/svg.latex?(MN+L2^D){\cdot}C\cdot8Byte"/> memory allocation (each thread has its own matrices to store both SHAP values and pre-computed values). Version 2 builds two consecutive parallel for-loops over all trees and over all samples respectively, which requires <img src="https://latex.codecogs.com/svg.latex?TL2^D\cdot8Byte"/> memory allocation (first parallel for-loop stores pre-computed values across all trees). In FastTreeSHAP package, version 1 is selected for FastTreeSHAP v2 as long as its memory constraint is satisfied. If not, version 2 is selected as an alternative as long as its memory constraint is satisfied. If the memory constraints in both version 1 and version 2 are not satisfied, FastTreeSHAP v1 will replace FastTreeSHAP v2 with a less strict memory constraint.
+- **`n_jobs`** (default `-1`): number of OpenMP threads; `-1` uses all cores. v3 parallelizes over trees.
+- **`memory_tolerance`** (default `-1`): memory budget in GB for the v2/v3 precompute tables; default caps at 25% of system RAM. If the budget doesn't fit, the explainer automatically falls back (v2_1 → v2_2 → v1) with a warning.
+- **`shortcut`** (default `False`): delegate to the TreeSHAP built into XGBoost/LightGBM/CatBoost instead of this package (always on for CatBoost, whose native path isn't ported yet).
+- **`data` / `feature_perturbation`**: as in `shap` — default `"tree_path_dependent"` needs no background data.
+- **Interaction values**: `shap_interaction_values(X)` is supported; with `algorithm="v3"` it falls back to v1 (with a warning), as interactions aren't batched yet.
 
-## Notebooks
+## How it works
 
-The notebooks below contain more detailed comparisons between FastTreeSHAP v1, FastTreeSHAP v2 and the original TreeSHAP in classification and regression problems using [scikit-learn](https://scikit-learn.org), [XGBoost](https://github.com/dmlc/xgboost) and [LightGBM](https://github.com/microsoft/LightGBM):
-* [Census Income (Binary Classification)](notebooks/FastTreeSHAP_Census_Income.ipynb)
-* [Superconductor (Regression)](notebooks/FastTreeSHAP_Superconductor.ipynb)
-* [Crop Mapping (Multiclass Classification)](notebooks/FastTreeSHAP_Crop_Mapping.ipynb)
+- **v1/v2** (from the [paper](https://arxiv.org/abs/2109.09847)): v1 restructures per-leaf Shapley-weight accounting (~1.5× vs TreeSHAP, same memory); v2 precomputes the weight sums for all 2^D feature subsets of each leaf path, once per tree, turning per-sample leaf work into table lookups — O(TL2^D + MTLD) time, O(L·2^D) memory.
+- **This fork's v2 optimizations**: constant-factor engineering in the recursion — O(1) incremental subset indexing, mutate-and-undo instead of copy-on-descend, 8-argument calls instead of 21.
+- **v3 batched descent**: the observation that along any root-to-leaf path, the path *structure* is sample-independent — only one pass/fail bit per split and a running residual differ per sample. So the traversal runs once per tree with per-level vectors over samples (subset-index bits, residuals), transposed inputs and outputs, and branchless leaf scale computation.
+
+Every optimization was gated on producing outputs identical to a frozen `shap` reference (atol 1e-8; measured ~1e-14) across binary, multiclass, regression, and gradient-boosting models with additivity checks enabled. Changes that reordered *bookkeeping* were allowed; anything that would reorder *arithmetic* (FMA, reciprocal division) was rejected by design.
+
+See [algorithm_report.html](algorithm_report.html) for an interactive walkthrough of all five generations.
 
 ## Citation
-Please cite [FastTreeSHAP](https://arxiv.org/abs/2109.09847) in your publications if it helps your research:
+
+If this fork helps your research, please cite the original Fast TreeSHAP paper:
+
 ```
 @article{yang2021fast,
   title={Fast TreeSHAP: Accelerating SHAP Value Computation for Trees},
@@ -135,5 +84,8 @@ Please cite [FastTreeSHAP](https://arxiv.org/abs/2109.09847) in your publication
 }
 ```
 
-## License
+## Acknowledgements & License
+
+Built on [linkedin/FastTreeSHAP](https://github.com/linkedin/FastTreeSHAP) by Jilei Yang and the [SHAP](https://github.com/slundberg/shap) package by Scott Lundberg. Original documentation (legacy benchmark tables, notebooks) lives in the upstream repository.
+
 Copyright (c) LinkedIn Corporation. All rights reserved. Licensed under the [BSD 2-Clause](https://opensource.org/licenses/BSD-2-Clause) License.
