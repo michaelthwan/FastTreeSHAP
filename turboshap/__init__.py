@@ -7,7 +7,7 @@ __version__ = '0.1.6'
 
 # check python version
 if (sys.version_info < (3, 0)):
-    warnings.warn("fasttreeshap only supports Python 3 (not 2)!")
+    warnings.warn("turboshap only supports Python 3 (not 2)!")
 
 from ._explanation import Explanation, Cohorts
 
