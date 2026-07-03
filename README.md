@@ -45,6 +45,37 @@ The table below compares the execution times of FastTreeSHAP v1 and FastTreeSHAP
 \*\* SHAP package calls TreeSHAP algorithm in XGBoost package, which by default enables parallel computing on all cores.\
 \*\*\* SHAP package calls TreeSHAP algorithm in LightGBM package, which by default enables parallel computing on all cores.
 
+## Additional FastTreeSHAP v2 Optimizations
+
+This fork further optimizes the FastTreeSHAP v2 C++ implementation while producing **bit-identical SHAP values** (verified against the SHAP package at atol=1e-8 on binary/multiclass classification, regression, and gradient boosting models):
+
+* **Incremental combination-sum indexing** — the index into the precomputed combination-sum table is maintained incrementally during tree descent (O(1) per leaf) instead of being recomputed with an O(depth) loop at every leaf.
+* **Backtracking path traversal** — the recursion mutates a single shared path array and undoes prefix modifications on return, instead of copying the parent path (O(depth)) at every node.
+* **Context-struct recursion** (`v2-ctx-struct`) — the 14 loop-invariant arguments are packed into a context struct, so each recursive call passes 8 arguments instead of 21, shrinking call frames in the hot recursion.
+* **Dynamic OpenMP scheduling** on the parallel-over-trees loops, plus MSVC OpenMP support (`/openmp:llvm`), which the original build silently lacked on Windows.
+
+Measured on sklearn random forests (100 trees, 2,000 [Adult](https://archive.ics.uci.edu/ml/datasets/census+income) samples, AMD Ryzen 9 7900X, single core unless noted), against the SHAP package v0.45:
+
+|Tree Depth|SHAP (native)|FastTreeSHAP v2 (original)|FastTreeSHAP v2 (optimized)|Speedup vs native|Optimized + 24 threads|
+|---------:|------------:|-------------------------:|--------------------------:|----------------:|---------------------:|
+|8|3.63s|1.28s (2.84x)|0.92s|**3.95x**|0.09s (~40x)|
+|12|26.21s|10.29s (2.55x)|7.67s|**3.42x**|0.56s (~47x)|
+
+## FastTreeSHAP v3 (Batched Descent)
+
+This fork also adds a new algorithm, `algorithm="v3"`, that changes the execution model rather than the leaf math: v0–v2 all re-walk each tree once per sample, but along any root-to-leaf path the path structure (features, zero-fractions, duplicate removals) is sample-independent — the only per-sample state is one pass/fail bit per split and a running residual. v3 therefore walks each tree **once**, carrying all samples through the traversal as vectors (subset-index bits, residuals, branch bits) updated in dense loops over the batch. It applies the identical per-sample arithmetic in the identical order as v2, so its output is **bitwise equal** to v2's (and matches the SHAP package within floating-point noise). Same complexity and memory as v2 (O(L·2^D) precompute table); parallelism goes over trees with per-thread output buffers.
+
+Measured on the same setup as above:
+
+|Tree Depth|SHAP (native)|FastTreeSHAP v2 (optimized)|FastTreeSHAP v3|Speedup vs native|v3 + 24 threads|
+|---------:|------------:|--------------------------:|--------------:|----------------:|--------------:|
+|8|3.63s|0.92s (3.95x)|0.34s|**10.7x**|0.03s (~121x)|
+|12|26.21s|7.67s (3.42x)|1.98s|**13.2x**|0.15s (~175x)|
+
+```python
+shap_values = fasttreeshap.TreeExplainer(model, algorithm="v3", n_jobs=-1).shap_values(X)
+```
+
 ## Installation
 
 FastTreeSHAP package is available on PyPI and can be installed with pip:

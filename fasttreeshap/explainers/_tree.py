@@ -49,7 +49,8 @@ algorithm_codes = {
     "v2": 2,
     "v2_1": 3,
     "v2_2": 4,
-    "auto": 5
+    "auto": 5,
+    "v3": 6
 }
 
 class Tree(Explainer):
@@ -84,15 +85,17 @@ class Tree(Explainer):
             of training examples that went down each leaf to represent the background distribution. This approach
             does not require a background dataset and so is used by default when no background dataset is provided.
 
-        algorithm : "auto" (default), "v0", "v1" or "v2"
+        algorithm : "auto" (default), "v0", "v1", "v2" or "v3"
             The "v0" algorithm refers to TreeSHAP algorithm in SHAP package (https://github.com/slundberg/shap).
             The "v1" and "v2" algorithms refer to Fast TreeSHAP v1 algorithm and Fast TreeSHAP v2 algorithm
-            proposed in paper https://arxiv.org/abs/2109.09847 (Jilei 2021). In practice, Fast TreeSHAP v1 is 1.5x 
-            faster than TreeSHAP while keeping the memory cost unchanged, and Fast TreeSHAP v2 is 2.5x faster than 
-            TreeSHAP at the cost of a slightly higher memory usage. The default value of algorithm is "auto", 
-            which automatically chooses the most appropriate algorithm to use. Specifically, we always prefer 
-            "v1" over "v0", and we prefer "v2" over "v1" when the number of samples to be explained is sufficiently 
-            large, and the memory constraint is also satisfied.
+            proposed in paper https://arxiv.org/abs/2109.09847 (Jilei 2021). In practice, Fast TreeSHAP v1 is 1.5x
+            faster than TreeSHAP while keeping the memory cost unchanged, and Fast TreeSHAP v2 is 2.5x faster than
+            TreeSHAP at the cost of a slightly higher memory usage. The "v3" algorithm (this fork) walks each tree
+            once, carrying all samples through the traversal as vectors; it produces output bitwise equal to "v2"
+            with the same memory profile, and is several times faster again when explaining many samples at once.
+            The default value of algorithm is "auto", which automatically chooses the most appropriate algorithm
+            to use. Specifically, we always prefer "v1" over "v0", and we prefer "v2" over "v1" when the number of
+            samples to be explained is sufficiently large, and the memory constraint is also satisfied.
 
         n_jobs : -1 (default), or a positive integer
             Number of parallel threads used to run Fast TreeSHAP. The default value of n_jobs is -1, which utilizes
@@ -451,6 +454,12 @@ class Tree(Explainer):
                 else:
                     warnings.warn("There may exist memory issue for algorithm v2. Switched to algorithm v1.")
                     algorithm = "v1"
+            elif algorithm == "v3":
+                # v3 has the same per-thread combination-sum memory profile as v2_1
+                memory_check_1, _ = self._memory_check(X)
+                if not memory_check_1:
+                    warnings.warn("There may exist memory issue for algorithm v3. Switched to algorithm v1.")
+                    algorithm = "v1"
 
         X, y, X_missing, flat_output, tree_limit, check_additivity = self._validate_inputs(X, y,
                                                                                            tree_limit,
@@ -563,8 +572,8 @@ class Tree(Explainer):
         # choose the most appropriate TreeSHAP algorithm
         if self.algorithm == "auto":
             algorithm = "v1"
-        elif self.algorithm == "v2":
-            warnings.warn("Algorithm v2 does not support interactions. Switched to algorithm v1.")
+        elif self.algorithm in ("v2", "v3"):
+            warnings.warn("Algorithm {} does not support interactions. Switched to algorithm v1.".format(self.algorithm))
             algorithm = "v1"
         else:
             algorithm = self.algorithm

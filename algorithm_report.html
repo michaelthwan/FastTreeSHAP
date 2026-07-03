@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TreeSHAP, Six Ways — from native shap to batched descent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0f1c;
+  --panel: #111a2c;
+  --panel-2: #0d1524;
+  --line: #22304a;
+  --grid: rgba(96, 140, 255, 0.055);
+  --text: #d9e1ee;
+  --muted: #8391a8;
+  --faint: #5a6880;
+  --amber: #ffb454;
+  --c-native: #8b93a7;
+  --c-v0: #4da3ff;
+  --c-v1: #3ddc97;
+  --c-v2: #ffb454;
+  --c-opt: #ff5d8f;
+  --c-v3: #b48bff;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --sans: "IBM Plex Sans", sans-serif;
+  --slab: "Zilla Slab", serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+    radial-gradient(1200px 600px at 70% -10%, #14224011 0%, transparent 60%),
+    var(--bg);
+  background-size: 28px 28px, 28px 28px, auto, auto;
+  color: var(--text);
+  font-family: var(--sans);
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; opacity: .5; z-index: 999;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.03 0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px; }
+
+/* ---------- hero ---------- */
+header { padding: 72px 0 40px; border-bottom: 1px solid var(--line); position: relative; }
+.kicker { font-family: var(--mono); font-size: 12px; letter-spacing: .22em; color: var(--amber); text-transform: uppercase; }
+.kicker::before { content: "▚ "; }
+h1 { font-family: var(--slab); font-weight: 700; font-size: clamp(34px, 5.2vw, 58px); line-height: 1.08; margin: 14px 0 10px; }
+h1 em { font-style: normal; color: var(--c-opt); }
+.sub { color: var(--muted); max-width: 640px; font-size: 16px; }
+.hero-stats { display: flex; gap: 0; margin-top: 36px; border: 1px solid var(--line); background: var(--panel-2); }
+.hstat { flex: 1; padding: 18px 22px; border-right: 1px solid var(--line); }
+.hstat:last-child { border-right: 0; }
+.hstat .num { font-family: var(--slab); font-weight: 700; font-size: clamp(26px, 3.4vw, 40px); color: var(--amber); }
+.hstat:first-child .num { color: var(--c-opt); }
+.hstat .lbl { font-family: var(--mono); font-size: 11px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+.specimen { position: absolute; right: 0; top: 66px; text-align: right; font-family: var(--mono); font-size: 11px; color: var(--faint); line-height: 1.9; display: none; }
+@media (min-width: 900px) { .specimen { display: block; } }
+
+/* ---------- version tabs ---------- */
+.tabs-bar { position: sticky; top: 0; z-index: 50; background: #0a0f1cee; backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); }
+.tabs { display: flex; gap: 8px; padding: 12px 0; overflow-x: auto; }
+.tab {
+  font-family: var(--mono); font-size: 13px; padding: 8px 14px; cursor: pointer; white-space: nowrap;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+  transition: all .18s ease; user-select: none;
+}
+.tab .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; background: var(--vc, #888); vertical-align: 1px; }
+.tab:hover { color: var(--text); border-color: var(--vc); }
+.tab.active { color: #0a0f1c; background: var(--vc); border-color: var(--vc); font-weight: 600; }
+.tab.active .dot { background: #0a0f1c; }
+
+/* ---------- sections ---------- */
+section { padding: 56px 0 24px; }
+h2 { font-family: var(--slab); font-weight: 600; font-size: 28px; margin-bottom: 6px; }
+h2 .idx { font-family: var(--mono); font-size: 13px; color: var(--amber); vertical-align: 8px; margin-right: 10px; }
+.lead { color: var(--muted); max-width: 720px; margin-bottom: 26px; }
+.reveal { opacity: 0; transform: translateY(18px); transition: opacity .6s ease, transform .6s ease; }
+.reveal.in { opacity: 1; transform: none; }
+
+/* ---------- lineage timeline ---------- */
+.lineage { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-top: 8px; }
+.gen {
+  border: 1px solid var(--line); background: var(--panel-2); padding: 16px 16px 14px; cursor: pointer;
+  border-top: 3px solid var(--vc); transition: all .18s ease; position: relative;
+}
+.gen:hover { transform: translateY(-3px); background: var(--panel); }
+.gen.active { background: var(--panel); box-shadow: 0 0 0 1px var(--vc), 0 12px 30px -18px var(--vc); }
+.gen .tag { font-family: var(--mono); font-size: 11px; color: var(--vc); letter-spacing: .1em; }
+.gen h3 { font-family: var(--slab); font-size: 17px; margin: 4px 0 6px; }
+.gen p { font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.gen .t { font-family: var(--mono); font-size: 12px; margin-top: 10px; color: var(--text); }
+.gen .t b { color: var(--vc); }
+@media (max-width: 820px) { .lineage { grid-template-columns: repeat(2, 1fr); } }
+
+/* ---------- detail readout ---------- */
+.readout { border: 1px solid var(--line); background: var(--panel-2); margin-top: 18px; padding: 22px; display: grid; grid-template-columns: 1.3fr 1fr; gap: 24px; }
+@media (max-width: 820px) { .readout { grid-template-columns: 1fr; } }
+.readout h3 { font-family: var(--slab); font-size: 22px; color: var(--vc); margin-bottom: 8px; }
+.readout .desc { color: var(--muted); font-size: 14.5px; }
+.readout .desc b { color: var(--text); }
+.kv { font-family: var(--mono); font-size: 13px; display: grid; grid-template-columns: 120px 1fr; row-gap: 8px; align-content: start; }
+.kv dt { color: var(--faint); }
+.kv dd { color: var(--text); }
+.kv .fx { color: var(--amber); }
+
+/* ---------- flow diagram ---------- */
+.flow-frame { border: 1px solid var(--line); background: var(--panel-2); margin-top: 20px; padding: 10px 6px 0; overflow-x: auto; }
+.flow-legend { display: flex; gap: 20px; padding: 10px 16px 14px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); flex-wrap: wrap; }
+.flow-legend .sw { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; border: 1px solid var(--faint); background: var(--panel); }
+.flow-legend .sw.chg { border-color: currentColor; box-shadow: 0 0 6px currentColor; }
+.flow-legend .sw.add { border-style: dashed; border-color: currentColor; }
+.flow-legend .sw.na { opacity: .25; }
+svg text { font-family: var(--mono); }
+.node rect, .node polygon { fill: #131d31; stroke: #33415e; stroke-width: 1.2; transition: all .25s ease; }
+.node text { fill: #aeb9cc; font-size: 12.5px; transition: fill .25s ease; }
+.node .nid { fill: #5a6880; font-size: 9.5px; letter-spacing: .12em; }
+.node { cursor: pointer; }
+.node:hover rect, .node:hover polygon { stroke: var(--amber); }
+.node.same rect, .node.same polygon { stroke: #33415e; }
+.node.changed rect, .node.changed polygon { stroke: var(--vc); stroke-width: 1.8; filter: drop-shadow(0 0 7px var(--vc)); }
+.node.changed text { fill: #e8edf5; }
+.node.added rect, .node.added polygon { stroke: var(--vc); stroke-width: 1.8; stroke-dasharray: 6 4; filter: drop-shadow(0 0 7px var(--vc)); }
+.node.added text { fill: #e8edf5; }
+.node.na { opacity: .22; }
+.node.selected rect, .node.selected polygon { stroke: var(--amber) !important; }
+.badge { font-size: 9px; font-weight: 600; letter-spacing: .14em; }
+.edge { stroke: #33415e; stroke-width: 1.3; fill: none; transition: opacity .25s; }
+.edge.na { opacity: .15; }
+.edge-lbl { fill: #5a6880; font-size: 10.5px; }
+.frame-lbl { fill: #5a6880; font-size: 11px; letter-spacing: .18em; }
+.loop-frame { fill: none; stroke: #2a3954; stroke-width: 1; stroke-dasharray: 4 5; }
+
+/* node detail card */
+.node-detail { border: 1px solid var(--line); border-top: 2px solid var(--amber); background: var(--panel-2); padding: 18px 22px; margin: 14px 0 0; min-height: 92px; }
+.node-detail .nd-title { font-family: var(--mono); font-size: 13px; color: var(--amber); margin-bottom: 6px; }
+.node-detail .nd-body { font-size: 14px; color: var(--muted); }
+.node-detail .nd-body b { color: var(--text); }
+.node-detail code { font-family: var(--mono); font-size: 12.5px; color: var(--c-v1); background: #0a121f; padding: 1px 5px; }
+
+/* ---------- optimization cards ---------- */
+.opt-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 10px; }
+.v3-grid { grid-template-columns: 1.15fr 1fr; }
+@media (max-width: 900px) { .opt-grid, .v3-grid { grid-template-columns: 1fr; } }
+.opt-card { border: 1px solid var(--line); background: var(--panel-2); padding: 18px; border-top: 3px solid var(--c-opt); }
+.opt-card h4 { font-family: var(--slab); font-size: 17px; margin-bottom: 6px; }
+.opt-card .gain { font-family: var(--mono); font-size: 11px; color: var(--c-opt); letter-spacing: .1em; }
+.opt-card p { font-size: 13px; color: var(--muted); margin: 8px 0 12px; }
+pre.diff { font-family: var(--mono); font-size: 11.3px; line-height: 1.65; background: #0a121f; border: 1px solid var(--line); padding: 12px 14px; overflow-x: auto; }
+pre.diff .del { color: #ff7b8a; }
+pre.diff .add { color: #57e6a5; }
+pre.diff .ctx { color: #5a6880; }
+
+/* ---------- results ---------- */
+.res-controls { display: flex; gap: 8px; margin: 6px 0 18px; }
+.pill { font-family: var(--mono); font-size: 12px; padding: 6px 14px; border: 1px solid var(--line); color: var(--muted); cursor: pointer; background: var(--panel-2); }
+.pill.active { color: var(--amber); border-color: var(--amber); }
+.chart { border: 1px solid var(--line); background: var(--panel-2); padding: 26px 26px 18px; }
+.bar-row { display: grid; grid-template-columns: 190px 1fr 150px; align-items: center; gap: 14px; margin-bottom: 14px; }
+.bar-row .name { font-family: var(--mono); font-size: 12.5px; color: var(--muted); text-align: right; }
+.bar-row.hl .name { color: var(--text); }
+.bar-track { background: #0a121f; border: 1px solid #1c2840; height: 26px; position: relative; }
+.bar-fill { height: 100%; width: 0; background: linear-gradient(90deg, color-mix(in srgb, var(--bc) 55%, #0a0f1c), var(--bc)); transition: width .8s cubic-bezier(.2,.8,.2,1); position: relative; }
+.bar-row.hl .bar-fill::after { content: ""; position: absolute; inset: 0; box-shadow: 0 0 14px var(--bc); }
+.bar-val { font-family: var(--mono); font-size: 13px; }
+.bar-val b { color: var(--amber); }
+.chart-note { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-top: 12px; }
+table.results { width: 100%; border-collapse: collapse; margin-top: 22px; font-size: 13.5px; }
+table.results th, table.results td { border: 1px solid var(--line); padding: 9px 12px; text-align: right; font-family: var(--mono); }
+table.results th { background: #131d31; color: var(--muted); font-weight: 500; font-size: 12px; }
+table.results td:first-child, table.results th:first-child { text-align: left; }
+table.results .win { color: var(--c-opt); font-weight: 600; }
+
+/* ---------- footer ---------- */
+.method { border-left: 3px solid var(--c-v1); background: var(--panel-2); padding: 16px 20px; font-size: 13.5px; color: var(--muted); margin-top: 8px; }
+.method b { color: var(--c-v1); }
+footer { border-top: 1px solid var(--line); margin-top: 64px; padding: 26px 0 48px; font-family: var(--mono); font-size: 11.5px; color: var(--faint); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+a { color: var(--c-v0); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="kicker">Engineering report · FastTreeSHAP fork · branch v2-speedup</div>
+    <h1>TreeSHAP, six ways:<br>how the same numbers got <em>13× faster</em></h1>
+    <p class="sub">An interactive walkthrough of the algorithm lineage — native <span style="font-family:var(--mono)">shap</span> → v0 → v1 → v2 → this fork's optimized v2 → this fork's <b>v3 batched descent</b> — showing exactly which part of the computation each generation changed, while every version produces bit-identical SHAP values.</p>
+    <div class="specimen">
+      DOC NO. FTS-2026-07-02<br>
+      MODEL RF·100T·D8/D12<br>
+      SAMPLES 2,000 (ADULT)<br>
+      CPU RYZEN 9 7900X<br>
+      TOLERANCE ≤ 1e-8 · MEASURED 9.2e-15
+    </div>
+    <div class="hero-stats">
+      <div class="hstat"><div class="num" id="stat-speed" style="color:var(--c-v3)">13.2×</div><div class="lbl">v3 batched vs native shap · 1 core</div></div>
+      <div class="hstat"><div class="num">≈175×</div><div class="lbl">with 24 threads · depth 12</div></div>
+      <div class="hstat"><div class="num">9.2e-15</div><div class="lbl">max output diff (fp noise = identical)</div></div>
+      <div class="hstat"><div class="num">16</div><div class="lbl">experiments run · 1 new algorithm</div></div>
+    </div>
+  </div>
+</header>
+
+<div class="tabs-bar"><div class="wrap"><div class="tabs" id="tabs"></div></div></div>
+
+<section id="lineage">
+  <div class="wrap">
+    <h2 class="reveal"><span class="idx">01</span>The lineage</h2>
+    <p class="lead reveal">Six generations of the same computation. Click a generation — everything on this page (diagram, readout, chart) follows your selection. Times shown are depth-12 single-core medians.</p>
+    <div class="lineage reveal" id="lineage-cards"></div>
+    <div class="readout reveal" id="readout"></div>
+  </div>
+</section>
+
+<section id="flow">
+  <div class="wrap">
+    <h2 class="reveal"><span class="idx">02</span>Where the work happens — and what each generation changed</h2>
+    <p class="lead reveal">This is the flow of one explanation: per-model setup on the left, then the loop that runs once per sample × per tree. Highlighted blocks are the ones the selected generation <b>changed</b> or <b>added</b>; dimmed blocks don't exist in that generation. Click any block for the full story.</p>
+    <div class="flow-frame reveal">
+      <div class="flow-legend">
+        <span><span class="sw"></span>unchanged</span>
+        <span style="color:var(--vc,#ffb454)"><span class="sw chg"></span>changed in this generation</span>
+        <span style="color:var(--vc,#ffb454)"><span class="sw add"></span>added in this generation</span>
+        <span><span class="sw na"></span>not present</span>
+      </div>
+      <svg id="flowsvg" viewBox="0 0 1000 640" width="100%" style="min-width:820px">
+        <defs>
+          <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L8,4 L0,8 z" fill="#33415e"/>
+          </marker>
+        </defs>
+
+        <!-- setup column frame -->
+        <rect x="30" y="40" width="290" height="480" class="loop-frame" style="stroke:#2a3954"/>
+        <text x="46" y="66" class="frame-lbl">SETUP · ONCE PER MODEL</text>
+
+        <!-- loop frame -->
+        <rect x="360" y="40" width="610" height="580" class="loop-frame" style="stroke:#2a3954"/>
+        <text x="376" y="66" class="frame-lbl" id="hotloop-lbl">HOT LOOP · PER SAMPLE × PER TREE</text>
+
+        <!-- edges -->
+        <path class="edge" d="M175,150 L175,186" marker-end="url(#arr)" data-e="n0-n9"/>
+        <path class="edge" d="M175,264 L175,300" marker-end="url(#arr)" data-e="n9-n1"/>
+        <path class="edge" d="M320,340 C350,340 340,110 425,110" marker-end="url(#arr)" data-e="n1-n2"/>
+        <path class="edge" d="M665,146 L665,180" marker-end="url(#arr)" data-e="n2-n3"/>
+        <path class="edge" d="M600,232 C540,260 540,270 540,296" marker-end="url(#arr)" data-e="n3-n4"/>
+        <text x="548" y="266" class="edge-lbl">leaf</text>
+        <path class="edge" d="M730,232 C790,260 790,270 790,296" marker-end="url(#arr)" data-e="n3-n6"/>
+        <text x="798" y="266" class="edge-lbl">internal</text>
+        <path class="edge" d="M540,372 L540,404" marker-end="url(#arr)" data-e="n4-n5"/>
+        <path class="edge" d="M790,372 L790,404" marker-end="url(#arr)" data-e="n6-n7"/>
+        <path class="edge" d="M905,436 C960,436 960,110 912,110" marker-end="url(#arr)" data-e="n7-n2"/>
+        <text x="930" y="280" class="edge-lbl" transform="rotate(90 940 280)">descend ×2</text>
+        <path class="edge" d="M790,468 L790,500" marker-end="url(#arr)" data-e="n7-n8"/>
+
+        <!-- nodes -->
+        <g class="node" data-n="n0"><rect x="60" y="86" width="230" height="64" rx="2"/>
+          <text x="76" y="106" class="nid">N0</text>
+          <text x="76" y="124">parse model → flat arrays</text>
+          <text x="76" y="140" style="font-size:11px; fill:#7d8aa0">children · thresholds · weights</text></g>
+        <g class="node" data-n="n9"><rect x="60" y="186" width="230" height="78" rx="2"/>
+          <text x="76" y="206" class="nid">N9</text>
+          <text x="76" y="224">parallelize across cores</text>
+          <text x="76" y="240" style="font-size:11px; fill:#7d8aa0">OpenMP · n_jobs threads</text>
+          <text x="76" y="255" class="badge" fill="#5a6880" data-badge></text></g>
+        <g class="node" data-n="n1"><rect x="60" y="300" width="230" height="80" rx="2"/>
+          <text x="76" y="320" class="nid">N1</text>
+          <text x="76" y="338">precompute combination sums</text>
+          <text x="76" y="354" style="font-size:11px; fill:#7d8aa0">S[leaf][subset] · L×2^D table</text>
+          <text x="76" y="371" class="badge" fill="#5a6880" data-badge></text></g>
+
+        <g class="node" data-n="n2"><rect x="425" y="82" width="487" height="64" rx="2"/>
+          <text x="441" y="102" class="nid">N2</text>
+          <text x="441" y="120">descend: extend the feature path</text>
+          <text x="441" y="136" style="font-size:11px; fill:#7d8aa0">record (feature, zero_fraction, one_fraction) for this split</text>
+          <text x="820" y="102" class="badge" fill="#5a6880" data-badge></text></g>
+
+        <g class="node" data-n="n3">
+          <polygon points="665,182 748,207 665,232 582,207"/>
+          <text x="665" y="203" text-anchor="middle" class="nid">N3</text>
+          <text x="665" y="217" text-anchor="middle" style="font-size:11.5px">leaf?</text></g>
+
+        <g class="node" data-n="n4"><rect x="425" y="296" width="230" height="76" rx="2"/>
+          <text x="441" y="316" class="nid">N4</text>
+          <text x="441" y="334">leaf weights / subset index</text>
+          <text x="441" y="350" style="font-size:11px; fill:#7d8aa0" data-sub="n4">unwind pweights per feature</text>
+          <text x="441" y="364" class="badge" fill="#5a6880" data-badge></text></g>
+
+        <g class="node" data-n="n5"><rect x="425" y="404" width="230" height="64" rx="2"/>
+          <text x="441" y="424" class="nid">N5</text>
+          <text x="441" y="442">update φ per path feature</text>
+          <text x="441" y="457" style="font-size:11px; fill:#7d8aa0">± scale × leaf value</text></g>
+
+        <g class="node" data-n="n6"><rect x="675" y="296" width="230" height="76" rx="2"/>
+          <text x="691" y="316" class="nid">N6</text>
+          <text x="691" y="334">duplicated split? remove it</text>
+          <text x="691" y="350" style="font-size:11px; fill:#7d8aa0">same feature seen higher up</text>
+          <text x="691" y="364" class="badge" fill="#5a6880" data-badge></text></g>
+
+        <g class="node" data-n="n7"><rect x="675" y="404" width="230" height="64" rx="2"/>
+          <text x="691" y="424" class="nid">N7</text>
+          <text x="691" y="442">recurse left + right child</text>
+          <text x="691" y="457" style="font-size:11px; fill:#7d8aa0" data-sub="n7">copy path array per node</text>
+          <text x="856" y="424" class="badge" fill="#5a6880" data-badge></text></g>
+
+        <g class="node" data-n="n8"><rect x="675" y="500" width="230" height="60" rx="2"/>
+          <text x="691" y="520" class="nid">N8</text>
+          <text x="691" y="538">backtrack: restore path</text>
+          <text x="691" y="552" style="font-size:11px; fill:#7d8aa0">undo removal after children</text>
+          <text x="856" y="520" class="badge" fill="#5a6880" data-badge></text></g>
+      </svg>
+    </div>
+    <div class="node-detail reveal" id="node-detail">
+      <div class="nd-title">— click a block in the diagram —</div>
+      <div class="nd-body">Each block explains what it does, and how the selected generation treats it.</div>
+    </div>
+  </div>
+</section>
+
+<section id="opts">
+  <div class="wrap">
+    <h2 class="reveal"><span class="idx">03</span>The three optimizations in this fork's v2</h2>
+    <p class="lead reveal">All three attack constant factors in the hot loop — the asymptotics were already optimal. Each was gated on producing bit-identical output before being kept. Two further ideas (an iterative stack traversal, allocation hoisting) measured slower or within noise and were <b>rejected</b>; only measured wins were committed.</p>
+    <div class="opt-grid reveal">
+      <div class="opt-card">
+        <h4>Incremental subset index</h4>
+        <div class="gain">O(D) PER LEAF → O(1) · ≈ +11%</div>
+        <p>v2 looks up precomputed sums by a bitmask of "which path features passed". The original rescanned the whole path at <b>every leaf</b>; the index is now carried down the recursion and patched with one bit-op per step.</p>
+<pre class="diff"><span class="del">- unsigned ind = 0;                    // at every leaf
+- for (i = 1; i <= depth; ++i)
+-     if (path[i].one_fraction != 0)
+-         ind += 1 << (i - 1);</span>
+<span class="add">+ // maintained during descent:
++ if (one_fraction != 0)
++     ind += 1u << (depth - 1);
++ // duplicate removed → bit splice:
++ ind = (ind & low) | (ind >> p) << (p-1);</span></pre>
+      </div>
+      <div class="opt-card">
+        <h4>Backtracking path</h4>
+        <div class="gain">NO O(D) COPY PER NODE · ≈ +10%</div>
+        <p>Every node used to copy its parent's path array before touching it. Only one mutation ever hits the shared prefix — the duplicated-split removal — and it's exactly invertible, so the copy became mutate-and-undo.</p>
+<pre class="diff"><span class="del">- path = parent_path + depth;
+- std::copy(parent_path,
+-           parent_path + depth, path);</span>
+<span class="add">+ // shared array, in place
++ saved = path[dup_index];
++ /* ... recurse children ... */
++ shift_up(path, dup_index, depth);
++ path[dup_index] = saved;</span></pre>
+      </div>
+      <div class="opt-card">
+        <h4>Context-struct recursion</h4>
+        <div class="gain">21 ARGS → 8 · ≈ +12%</div>
+        <p>The recursive call carried 14 loop-invariant pointers through every frame. They now live in one struct passed by reference — smaller frames, fewer spills, in a function called once per node per sample per tree.</p>
+<pre class="diff"><span class="del">- tree_shap_recursive_v2(num_outputs,
+-   children_left, children_right, ...,
+-   /* 21 arguments */);</span>
+<span class="add">+ struct TreeShapV2Context { /*14 fields*/ };
++ tree_shap_recursive_v2(ctx, node,
++   depth, residual, zero_f, one_f,
++   feature, ind);   // 8 args</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="v3">
+  <div class="wrap">
+    <h2 class="reveal"><span class="idx">04</span>v3 — batched descent: changing the execution model itself</h2>
+    <p class="lead reveal">v0, v1 and v2 all keep one structural decision: the <b>sample</b> is the outer loop, and the tree is re-walked once per sample. Their improvements only changed the math at the leaves. v3 exploits a fact none of them use: along any root-to-leaf path, the path structure — features, zero-fractions, duplicate removals — is <b>sample-independent</b>. The only per-sample state is one pass/fail bit per split and a running residual.</p>
+    <div class="opt-grid v3-grid reveal">
+      <div class="opt-card" style="border-top-color: var(--c-v3)">
+        <h4>Walk each tree once, carry all samples as vectors</h4>
+        <div class="gain" style="color:var(--c-v3)">v2 OPT 7.48s → v3 2.02s · ≈3.7× ON TOP · SAME OUTPUT</div>
+        <p>One recursion per <b>tree</b> instead of one per sample × tree. At each level, three arrays over the 2,000 samples replace per-sample recursion state: <b>K</b> (subset-index bits), <b>R</b> (residual products), <b>B</b> (branch bits from comparing a contiguous feature column against the threshold). Every hot operation becomes a dense, branch-light loop over samples — SIMD- and cache-friendly — and the traversal bookkeeping (path copies, duplicate removal, recursion overhead) is paid once per tree instead of 2,000 times. Same O(T·L·2^D + M·T·L·D) asymptotics; the win is all constant factor.</p>
+      </div>
+      <div class="opt-card" style="border-top-color: var(--c-v3)">
+        <h4>The inner loop, per tree level</h4>
+        <p style="margin-top:2px">scalar recursion (per sample) becomes:</p>
+<pre class="diff"><span class="ctx">// branch bits: one comparison per sample</span>
+<span class="add">for (m = 0; m < M; ++m)
+    B[m] = x_col[m] <= threshold;</span>
+<span class="ctx">// extend K and R for the whole batch</span>
+<span class="add">for (m = 0; m < M; ++m) {
+    K[m] = K_par[m] | (B[m] << bit);
+    R[m] = B[m] ? R_par[m]
+                : R_par[m] * zero_frac;
+}</span>
+<span class="ctx">// leaf: φ update for all samples at once
+// (identical arithmetic, identical order
+//  → bit-identical output)</span></pre>
+      </div>
+    </div>
+    <p class="lead reveal" style="margin-top:18px; font-size:14px">A structural bonus: because siblings rebuild their level's vectors from the parent's level, the duplicate-removal <b>undo problem disappears</b> — v3 needs no backtracking. And with per-thread transposed φ buffers, parallelism goes over trees with a single merge at the end. Validated like everything else: bit-identical on binary, 5-class multiclass, depth-14 regression, and gradient boosting, single- and multi-threaded.</p>
+  </div>
+</section>
+
+<section id="results">
+  <div class="wrap">
+    <h2 class="reveal"><span class="idx">05</span>Measured results</h2>
+    <p class="lead reveal">sklearn RandomForestClassifier · 100 trees · 2,000 Adult samples · single core unless noted. Median of repeated runs, same machine, same session.</p>
+    <div class="res-controls reveal">
+      <div class="pill active" data-depth="12">tree depth 12</div>
+      <div class="pill" data-depth="8">tree depth 8</div>
+    </div>
+    <div class="chart reveal" id="chart"></div>
+    <table class="results reveal">
+      <tr><th>generation</th><th>depth 8</th><th>vs native</th><th>depth 12</th><th>vs native</th></tr>
+      <tr><td>native shap 0.45</td><td>3.63s</td><td>1.00×</td><td>26.21s</td><td>1.00×</td></tr>
+      <tr><td>v0 (this package)</td><td>3.47s</td><td>1.05×</td><td>24.84s</td><td>1.06×</td></tr>
+      <tr><td>v1</td><td>2.59s</td><td>1.40×</td><td>16.26s</td><td>1.61×</td></tr>
+      <tr><td>v2 (as published)</td><td>1.28s</td><td>2.84×</td><td>10.29s</td><td>2.55×</td></tr>
+      <tr><td>v2 optimized (this fork)</td><td>0.92s</td><td class="win">3.95×</td><td>7.67s</td><td class="win">3.42×</td></tr>
+      <tr><td>v2 optimized · 24 threads</td><td>0.09s</td><td class="win">≈40×</td><td>0.56s</td><td class="win">≈47×</td></tr>
+      <tr><td>v3 batched (this fork)</td><td>0.34s</td><td class="win">10.7×</td><td>1.98s</td><td class="win">13.2×</td></tr>
+      <tr><td>v3 batched · 24 threads</td><td>0.03s</td><td class="win">≈121×</td><td>0.15s</td><td class="win">≈175×</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="method">
+  <div class="wrap">
+    <h2 class="reveal"><span class="idx">06</span>Why "same SHAP behaviour" is guaranteed</h2>
+    <div class="method reveal">
+      <b>Correctness gate:</b> every experiment was rejected unless its output matched a frozen reference (native shap's values) within atol 1e-8 — measured differences never exceeded ~9×10⁻¹⁵, i.e. floating-point noise, because the optimizations reorder <i>bookkeeping</i>, never arithmetic. Validated on binary classification (2,000 real samples), 5-class multiclass, depth-14 regression, and gradient boosting, with SHAP's own additivity check enabled. v1/v2 are exact algorithms from the <a href="https://arxiv.org/abs/2109.09847">Fast TreeSHAP paper</a> (Yang, 2021), not approximations — and v3 applies the identical per-sample arithmetic in the identical DFS order as v2, just batched, so its outputs match v2's <i>exactly</i> (diff 0 between v3 and optimized v2 in single-thread runs). Every generation on this page computes the same Shapley values.
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap" style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; padding:0">
+    <span>FTS-2026-07-02 · commits 62a6ef9 + 8f6f6a7 (v3) · branch v2-speedup</span>
+    <span>full experiment log: speedup_report.html</span>
+  </div>
+</footer>
+
+<script>
+const VERSIONS = [
+  { id:"native", name:"native shap", color:"var(--c-native)", tag:"BASELINE · 2018",
+    title:"Native shap package (TreeSHAP)",
+    blurb:"Lundberg & Lee's exact polynomial-time algorithm for trees. For every sample and tree it walks <b>all</b> root-to-leaf paths, maintaining a set of unique split features with permutation weights (<i>pweights</i>). At each leaf it unwinds those weights once per path feature — the D² in the complexity. For sklearn models the package runs on <b>one core</b>.",
+    complexity:"O(M·T·L·D²)", space:"O(D² + N)", t12:"26.21s", s12:"1.00×", threads:"1 (sklearn)" },
+  { id:"v0", name:"v0", color:"var(--c-v0)", tag:"SAME MATH · PARALLEL",
+    title:"v0 — same algorithm, inside FastTreeSHAP",
+    blurb:"Identical algorithm, re-hosted in the FastTreeSHAP package where the sample loop is parallelized with OpenMP (<code>n_jobs</code>). Single-core it ties native shap (1.05×) — which also proves the baseline isn't strawmanned. <b>Note:</b> on Windows the build silently dropped OpenMP (GCC flag passed to MSVC); this fork fixes it with /openmp:llvm.",
+    complexity:"O(M·T·L·D²)", space:"O(D² + N)", t12:"24.84s", s12:"1.06×", threads:"n_jobs" },
+  { id:"v1", name:"v1", color:"var(--c-v1)", tag:"PAPER · FEWER UNWINDS",
+    title:"Fast TreeSHAP v1 — smarter leaf accounting",
+    blurb:"Same traversal, but the per-leaf work is restructured: instead of unwinding the weight sum separately for <b>every</b> feature on the path, v1 tracks a running residual for features that failed their threshold and computes their (shared) unwound sum <b>once</b>. Average leaf cost drops ~4×; same memory.",
+    complexity:"O(M·T·L·D²) worst · ≈¼ avg", space:"O(D² + N)", t12:"16.26s", s12:"1.61×", threads:"n_jobs" },
+  { id:"v2", name:"v2", color:"var(--c-v2)", tag:"PAPER · PRECOMPUTE",
+    title:"Fast TreeSHAP v2 — trade memory for time",
+    blurb:"The key insight: the expensive per-leaf weight sums depend only on <b>which subset of path features passed</b> — not on the sample's values. So precompute them for all 2^D subsets of every leaf's path, once per tree. The hot loop becomes a table lookup: per-sample cost drops from O(L·D²) to O(L·D) per tree, at O(L·2^D) memory.",
+    complexity:"O(T·L·2^D + M·T·L·D)", space:"O(L·2^D)", t12:"10.29s", s12:"2.55×", threads:"n_jobs · 2 modes" },
+  { id:"opt", name:"v2 optimized", color:"var(--c-opt)", tag:"THIS FORK · 2026",
+    title:"Optimized v2 — constant-factor engineering",
+    blurb:"Same asymptotics, ~1.4× less wall time: the subset index is maintained <b>incrementally</b> (O(1)/leaf instead of an O(D) rescan), the path array is <b>shared with backtracking</b> instead of copied at every node, and the recursion passes <b>8 arguments instead of 21</b> via a context struct. Plus dynamic OpenMP scheduling. Verified bit-identical on 4 model families.",
+    complexity:"O(T·L·2^D + M·T·L·D)", space:"O(L·2^D)", t12:"7.67s", s12:"3.42×", threads:"n_jobs · dynamic" },
+  { id:"v3", name:"v3 batched", color:"var(--c-v3)", tag:"THIS FORK · NEW ALGORITHM",
+    title:"v3 — batched descent: samples as vectors",
+    blurb:"Every earlier generation re-walks the tree once per <b>sample</b>. But the path structure — features, fractions, duplicate removals — is sample-independent; only a pass/fail bit per split and a residual are per-sample. So v3 walks each tree <b>once</b>, carrying all samples through the traversal as vectors (K = subset-index bits, R = residuals, B = branch bits), updated in dense loops. Identical arithmetic in identical order → bit-identical output; traversal overhead amortized 2,000× and inner loops the CPU actually likes.",
+    complexity:"O(T·L·2^D + M·T·L·D)", space:"O(L·2^D + D·M)", t12:"1.98s", s12:"13.2×", threads:"n_jobs over trees" },
+];
+
+// node states per version: s=same, c=changed, a=added, x=not present
+const NODES = {
+  n0:{ label:"Parse model → flat arrays",
+    states:{ native:"s", v0:"s", v1:"s", v2:"s", opt:"s", v3:"c" },
+    text:{ all:"Every generation starts the same way: the sklearn/XGBoost/LightGBM model is flattened into plain arrays (children, thresholds, leaf values, node sample weights) that the C++ core consumes.",
+      v3:"<b>Changed slightly:</b> v3 additionally <b>transposes X</b> once, so that at each split the 2,000 sample values for the split feature form one contiguous column — a single streaming read instead of 2,000 strided ones." } },
+  n9:{ label:"Parallelize across cores",
+    states:{ native:"x", v0:"a", v1:"s", v2:"c", opt:"c", v3:"c" },
+    text:{ native:"Native shap runs sklearn models on a single core — no parallelism at all. This is why FastTreeSHAP's end-to-end wins are so large in practice.",
+      v0:"<b>Added:</b> FastTreeSHAP wraps the sample loop in OpenMP (<code>#pragma omp parallel for</code>), controlled by <code>n_jobs</code>.",
+      v1:"Same parallel-over-samples scheme as v0.",
+      v2:"<b>Changed:</b> v2 needs the precomputed table near the loop, so it ships two modes: v2_1 parallelizes over trees (per-thread φ buffers merged at the end), v2_2 splits precompute and explain into two parallel passes. Chosen automatically by a memory check.",
+      opt:"<b>Changed:</b> tree loops get <code>schedule(dynamic)</code> for load balancing, and the MSVC build actually enables OpenMP (<code>/openmp:llvm</code>) — stock builds on Windows were silently single-threaded.",
+      v3:"<b>Changed:</b> there is no sample loop to parallelize anymore — threads split the <b>trees</b> (dynamic schedule), each accumulating into its own transposed φ buffer, merged once at the end. 24 threads take depth-12 from 1.98s to 0.15s." } },
+  n1:{ label:"Precompute combination sums",
+    states:{ native:"x", v0:"x", v1:"x", v2:"a", opt:"s", v3:"s" },
+    text:{ native:"Doesn't exist — all weight computation happens per sample, inside the hot loop.",
+      v0:"Doesn't exist.", v1:"Doesn't exist.",
+      v2:"<b>Added — the defining move of v2.</b> For each leaf, the Shapley weight sums are computed for every possible subset of 'features that passed' along its path — a table of L×2^D values per tree, built once. This is what removes D (and the per-feature unwinding) from the per-sample cost.",
+      opt:"Kept as-is; the optimizations target how the table is <i>consumed</i>, not how it's built.",
+      v3:"Kept from v2 unchanged — v3 consumes the same table, just for all samples at once at each leaf." } },
+  n2:{ label:"Descend: extend the feature path",
+    states:{ native:"s", v0:"s", v1:"c", v2:"s", opt:"c", v3:"c" },
+    sub:{ native:"append + copy pweights", v0:"append + copy pweights", v1:"append + residual tracking", v2:"append (feature, fractions)", opt:"append in place · O(1) index bit", v3:"once per tree · K/R/B vectors over samples" },
+    text:{ native:"Each split appends (feature, zero_fraction, one_fraction) to the path and extends the permutation weights — the bookkeeping that makes exact Shapley values possible in one walk.",
+      v0:"Identical to native.",
+      v1:"<b>Changed:</b> alongside the path, v1 maintains a running <code>pweights_residual</code> — the product of zero-fractions of features that failed their threshold — so leaves can price all of them at once.",
+      v2:"Path extension is back to basics (no pweights needed — the table has them), just features and fractions.",
+      opt:"<b>Changed twice:</b> the element is written into a <b>shared</b> array (no copy — see N7), and the leaf's subset index gains its bit here, during descent, in O(1) — instead of being recomputed from scratch at the leaf (see N4).",
+      v3:"<b>Changed — the heart of v3.</b> This step now runs once per tree node, not once per sample × node. The scalar path (features, fractions) extends as before, but the per-sample state extends as three dense vector operations over all 2,000 samples: branch bits <code>B[m] = x[m] &le; thr</code> from a contiguous feature column, subset bits <code>K[m] |= B[m] &lt;&lt; bit</code>, residuals <code>R[m] *= zero_frac</code> where the split failed." } },
+  n3:{ label:"Leaf?",
+    states:{ native:"s", v0:"s", v1:"s", v2:"s", opt:"s", v3:"c" },
+    text:{ all:"The branch every traversal shares: leaves settle contributions, internal nodes keep descending. Data-dependent and unpredictable — one reason this workload resists SIMD, and why compiler-flag experiments only moved ~5%.",
+      v3:"<b>Changed in cost, not in logic:</b> the branch is still there, but it now fires once per tree node instead of once per sample × node — the branch-misprediction tax is divided by 2,000. The remaining per-sample work is branch-light dense loops, which is exactly what the CPU wants." } },
+  n4:{ label:"Leaf weights / subset index",
+    states:{ native:"s", v0:"s", v1:"c", v2:"c", opt:"c", v3:"c" },
+    sub:{ native:"unwind pweights per feature — O(D²)", v0:"unwind pweights per feature — O(D²)", v1:"one zero-case unwind + residual — O(D)", v2:"table lookup · index rescan O(D)", opt:"table lookup · index carried O(1)", v3:"vector gather S[K[m]] for all samples" },
+    text:{ native:"The expensive part: for <b>each</b> feature on the path, unwind the permutation weights to get its Shapley weight — O(D) work × O(D) features = O(D²) per leaf.",
+      v0:"Identical to native.",
+      v1:"<b>Changed — the v1 speedup lives here.</b> Features that failed their threshold all share one 'zero-case' unwound sum, computed once; passing features are handled via the residual. Per-leaf cost collapses toward O(D).",
+      v2:"<b>Changed — the v2 speedup lives here.</b> No unwinding at all: the weight sum is a lookup <code>S[leaf][k]</code> where k encodes which path features passed. But the original recomputed k by scanning the path at every leaf — O(D).",
+      opt:"<b>Changed — optimization #1.</b> k arrives at the leaf already computed (maintained bit-by-bit during descent, spliced on duplicate removal). The per-leaf index cost is O(1). Worth ≈11% of v2's runtime.",
+      v3:"<b>Changed:</b> each sample's subset index arrived vectorized — <code>K[m]</code> was maintained during the batched descent. The leaf reads <code>S[K[m]]</code> (or the neighbor entry for passing features) for all 2,000 samples in one gather loop." } },
+  n5:{ label:"Update φ per path feature",
+    states:{ native:"s", v0:"s", v1:"c", v2:"c", opt:"s", v3:"c" },
+    text:{ native:"Each path feature's φ gets ± (weight × leaf value) — the actual SHAP accumulation.",
+      v0:"Identical to native.",
+      v1:"Scales come from the residual scheme rather than per-feature unwinding; the accumulation itself is unchanged.",
+      v2:"Scales come straight from the precomputed table (one subtraction of a neighboring entry for passing features).",
+      opt:"Unchanged from v2 — this loop is already minimal memory traffic (φ fits in L1).",
+      v3:"<b>Changed:</b> φ is stored <b>transposed</b> (feature-major), so at each leaf the update for one path feature writes a contiguous run of 2,000 values — a streaming multiply-add over the batch, per path feature, per output. Same terms, same order, same sums." } },
+  n6:{ label:"Duplicated split? remove it",
+    states:{ native:"s", v0:"s", v1:"s", v2:"s", opt:"c", v3:"c" },
+    text:{ native:"Trees reuse features: when a feature already on the path is split again, the earlier entry is removed (its effect re-applied at this node) so the path holds unique features — required for correct Shapley weights.",
+      v0:"Identical.", v1:"Identical (plus residual adjustment).", v2:"Identical (plus index adjustment).",
+      opt:"<b>Changed — enables optimization #2.</b> The removed element is <b>saved</b>, and the subset index is patched with a constant-time bit-splice. This is the only operation that ever mutates the shared path prefix — which is exactly why backtracking works.",
+      v3:"<b>Changed — vectorized.</b> The removal happens once for the whole batch: the duplicated bit is spliced out of every sample's <code>K[m]</code>, and <code>R[m]</code> is divided by the incoming zero-fraction exactly for the samples that had failed that split — the same per-sample arithmetic as v2, as a dense loop." } },
+  n7:{ label:"Recurse left + right",
+    states:{ native:"s", v0:"s", v1:"s", v2:"s", opt:"c", v3:"c" },
+    sub:{ native:"copies path + pweights per node", v0:"copies path + pweights per node", v1:"copies path + pweights per node", v2:"copies path per node", opt:"shared path · 8-arg calls", v3:"once per tree · amortized over all samples" },
+    text:{ native:"Every node copies its parent's path (and pweights) before descending — O(D) memory traffic per node, times 2L nodes, times every sample, times every tree.",
+      v0:"Identical.", v1:"Identical.", v2:"Same copy-on-descend pattern (path only).",
+      opt:"<b>Changed — optimizations #2 and #3.</b> No copy: children mutate the shared array and restore it (N8). And each call passes a context struct + 7 scalars instead of 21 arguments — smaller frames in the most-called function in the codebase. Together ≈22%.",
+      v3:"<b>Changed — the recursion is per tree, not per sample × tree.</b> Its entire overhead (calls, frames, the scalar path copy) is paid once per node per tree — amortized 2,000×, so it stopped mattering. Each level's K/R/B vectors live in a preallocated per-level buffer; siblings simply rebuild their level from the parent's, which is also why no undo step is needed." } },
+  n8:{ label:"Backtrack: restore path",
+    states:{ native:"x", v0:"x", v1:"x", v2:"x", opt:"a", v3:"x" },
+    text:{ native:"Doesn't exist — nothing to undo when every node works on its own copy.",
+      v0:"Doesn't exist.", v1:"Doesn't exist.", v2:"Doesn't exist.",
+      opt:"<b>Added.</b> After both children return, the duplicated-element removal is inverted: shift the elements back up, reinsert the saved element. Exact inverse in exact order — which is why the output stays bit-identical. (An iterative-stack variant of this whole recursion was also tried: 6% <i>slower</i> than the optimized recursion. Rejected.)",
+      v3:"<b>Gone again.</b> v3 doesn't need it: each node works on a local copy of the scalar path (cheap — it happens once per tree, not per sample), and per-level K/R/B vectors are rebuilt by each child from the parent's level. The duplicate-removal undo problem simply doesn't exist in this structure." } },
+};
+
+const RESULTS = {
+  "12": [ ["native shap", 26.21, "native"], ["v0", 24.84, "v0"], ["v1", 16.26, "v1"], ["v2 (published)", 10.29, "v2"], ["v2 optimized", 7.67, "opt"], ["v3 batched", 1.98, "v3"], ["v3 · 24 thr", 0.15, "v3"] ],
+  "8":  [ ["native shap", 3.63, "native"], ["v0", 3.47, "v0"], ["v1", 2.59, "v1"], ["v2 (published)", 1.28, "v2"], ["v2 optimized", 0.92, "opt"], ["v3 batched", 0.34, "v3"], ["v3 · 24 thr", 0.03, "v3"] ],
+};
+const COLORS = { native:"#8b93a7", v0:"#4da3ff", v1:"#3ddc97", v2:"#ffb454", opt:"#ff5d8f", v3:"#b48bff" };
+
+let cur = "opt", curDepth = "12", curNode = null;
+
+// tabs + lineage cards
+const tabsEl = document.getElementById("tabs");
+const lineEl = document.getElementById("lineage-cards");
+VERSIONS.forEach(v => {
+  const t = document.createElement("div");
+  t.className = "tab"; t.style.setProperty("--vc", COLORS[v.id]);
+  t.innerHTML = `<span class="dot"></span>${v.name}`;
+  t.onclick = () => select(v.id);
+  t.dataset.v = v.id; tabsEl.appendChild(t);
+
+  const c = document.createElement("div");
+  c.className = "gen"; c.style.setProperty("--vc", COLORS[v.id]);
+  c.innerHTML = `<div class="tag">${v.tag}</div><h3>${v.name}</h3><p>${v.title.split("—")[1] || "the reference implementation"}</p><div class="t">${v.t12} · <b>${v.s12}</b></div>`;
+  c.onclick = () => select(v.id);
+  c.dataset.v = v.id; lineEl.appendChild(c);
+});
+
+function select(id) {
+  cur = id;
+  const v = VERSIONS.find(x => x.id === id);
+  document.querySelectorAll(".tab").forEach(e => e.classList.toggle("active", e.dataset.v === id));
+  document.querySelectorAll(".gen").forEach(e => e.classList.toggle("active", e.dataset.v === id));
+  document.documentElement.style.setProperty("--vc", COLORS[id]);
+  document.querySelectorAll(".flow-frame, .flow-legend span").forEach(e => e.style.setProperty("--vc", COLORS[id]));
+
+  document.getElementById("readout").innerHTML = `
+    <div style="--vc:${COLORS[id]}"><h3 style="color:${COLORS[id]}">${v.title}</h3><div class="desc">${v.blurb}</div></div>
+    <dl class="kv">
+      <dt>time</dt><dd class="fx">${v.complexity}</dd>
+      <dt>space</dt><dd class="fx">${v.space}</dd>
+      <dt>depth-12 · 1 core</dt><dd>${v.t12} (${v.s12} vs native)</dd>
+      <dt>threads</dt><dd>${v.threads}</dd>
+      <dt>output</dt><dd>bit-identical to native</dd>
+    </dl>`;
+
+  // flow nodes
+  document.querySelectorAll(".node").forEach(g => {
+    const n = NODES[g.dataset.n];
+    const st = n.states[id];
+    g.classList.remove("same","changed","added","na");
+    g.classList.add(st === "s" ? "same" : st === "c" ? "changed" : st === "a" ? "added" : "na");
+    g.style.setProperty("--vc", COLORS[id]);
+    const badge = g.querySelector("[data-badge]");
+    if (badge) { badge.textContent = st === "c" ? "● CHANGED" : st === "a" ? "◌ NEW" : ""; badge.setAttribute("fill", COLORS[id]); }
+    const sub = g.querySelector(`[data-sub]`);
+    if (sub && n.sub) sub.textContent = n.sub[id] || n.sub.native;
+  });
+  document.getElementById("hotloop-lbl").textContent =
+    id === "v3" ? "HOT LOOP · PER TREE — ALL SAMPLES AS VECTORS" : "HOT LOOP · PER SAMPLE × PER TREE";
+  // dim edges to absent nodes
+  document.querySelectorAll(".edge").forEach(e => {
+    const [a,b] = e.dataset.e.split("-");
+    const na = (NODES[a].states[id] === "x") || (NODES[b].states[id] === "x");
+    e.classList.toggle("na", na);
+  });
+  if (curNode) showNode(curNode);
+  renderChart();
+}
+
+function showNode(nid) {
+  curNode = nid;
+  const n = NODES[nid];
+  document.querySelectorAll(".node").forEach(g => g.classList.toggle("selected", g.dataset.n === nid));
+  const txt = n.text[cur] || n.text.all || n.text.native;
+  const vname = VERSIONS.find(x => x.id === cur).name;
+  document.getElementById("node-detail").innerHTML =
+    `<div class="nd-title">${nid.toUpperCase()} · ${n.label} — viewing: ${vname}</div><div class="nd-body">${txt}</div>`;
+}
+document.querySelectorAll(".node").forEach(g => g.addEventListener("click", () => showNode(g.dataset.n)));
+
+// chart
+function renderChart() {
+  const data = RESULTS[curDepth];
+  const max = Math.max(...data.map(d => d[1]));
+  const el = document.getElementById("chart");
+  el.innerHTML = data.map(([name, t, vid]) => {
+    const pct = Math.max(1.2, t / max * 100);
+    const speed = (data[0][1] / t);
+    const hl = vid === cur ? "hl" : "";
+    return `<div class="bar-row ${hl}" style="--bc:${COLORS[vid]}">
+      <div class="name">${name}</div>
+      <div class="bar-track"><div class="bar-fill" data-w="${pct}"></div></div>
+      <div class="bar-val">${t.toFixed(2)}s · <b>${speed >= 10 ? "≈" + Math.round(speed) : speed.toFixed(2)}×</b></div>
+    </div>`;
+  }).join("") + `<div class="chart-note">bars = wall time (shorter is better) · × = speedup vs native shap · depth ${curDepth} · single core except last row</div>`;
+  requestAnimationFrame(() => requestAnimationFrame(() =>
+    el.querySelectorAll(".bar-fill").forEach(b => b.style.width = b.dataset.w + "%")));
+}
+document.querySelectorAll(".pill").forEach(p => p.onclick = () => {
+  document.querySelectorAll(".pill").forEach(x => x.classList.remove("active"));
+  p.classList.add("active"); curDepth = p.dataset.depth; renderChart();
+});
+
+// reveal on scroll
+const io = new IntersectionObserver(es => es.forEach(e => e.isIntersecting && e.target.classList.add("in")), { threshold: .12 });
+document.querySelectorAll(".reveal").forEach(e => io.observe(e));
+
+select("v3");
+showNode("n2");
+</script>
+</body>
+</html>

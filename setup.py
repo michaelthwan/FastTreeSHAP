@@ -81,9 +81,18 @@ def run_setup(with_binary, with_openmp, test_xgboost, test_lightgbm, test_catboo
         if with_openmp:
             if sys.platform == "darwin":
                 compile_args += ['-Xpreprocessor', '-fopenmp', '-lomp']
+            elif sys.platform == 'win32':
+                # MSVC ignores GCC's -fopenmp; /openmp:llvm supports the
+                # unsigned loop counters used in tree_shap.h (plain /openmp is OpenMP 2.0 only)
+                compile_args.append('/openmp:llvm')
             else:
                 compile_args.append('-fopenmp')
                 link_args.append('-fopenmp')
+
+        # allow benchmark experiments to inject flags without editing this file
+        extra_flags = os.environ.get('FTS_EXTRA_COMPILE_ARGS', '')
+        if extra_flags:
+            compile_args += extra_flags.split()
 
         ext_modules.append(
             Extension('fasttreeshap._cext', sources=['fasttreeshap/cext/_cext.cc'],
