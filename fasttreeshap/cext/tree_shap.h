@@ -1170,16 +1170,29 @@ struct TreeShapV3Context {
     tfloat *phi_t;               // transposed phi: phi_t[(f * num_outputs + j) * num_X + m]
     unsigned *K;                 // per recursion level: subset-index bits per sample
     tfloat *R;                   // per recursion level: pweights residual per sample
-    unsigned char *B;            // per recursion level: branch bit per sample
     unsigned char *INC;          // per recursion level: incoming (duplicate) bit per sample
     BatchedPathElement *path;    // triangular scalar path buffer (copied per node; once per tree)
     int *leaf_count;
 };
 
+// the child's branch bit is evaluated inside the extend loop (no materialized
+// B buffer): branch_col/branch_thr describe the parent's split, branch_right
+// picks the comparison side, branch_inc (nullable) carries the parent's
+// incoming duplicate bits. Same bit values as materializing them in a
+// separate pass — one fewer sweep over the samples per node.
+#define FTS_V3_EXTEND(BEXPR) \
+    for (unsigned m = 0; m < num_X; ++m) { \
+        const unsigned b = (BEXPR); \
+        K_row[m] = K_par[m] | (b << bitpos);                 /* bit add iff one_fraction != 0 */ \
+        R_row[m] = b ? R_par[m] : R_par[m] * zf;             /* residual mult iff one_fraction != 1 */ \
+    }
+
 inline void tree_shap_recursive_v3(const TreeShapV3Context &ctx, unsigned node_index,
                                    unsigned row, unsigned unique_depth,
                                    BatchedPathElement *parent_path,
-                                   tfloat parent_zero_fraction, int parent_feature_index) {
+                                   tfloat parent_zero_fraction, int parent_feature_index,
+                                   const tfloat *branch_col, tfloat branch_thr,
+                                   bool branch_right, const unsigned char *branch_inc) {
     const unsigned num_X = ctx.num_X;
     unsigned *K_row = ctx.K + row * num_X;
     tfloat *R_row = ctx.R + row * num_X;
@@ -1196,13 +1209,14 @@ inline void tree_shap_recursive_v3(const TreeShapV3Context &ctx, unsigned node_i
     } else {
         const unsigned *K_par = ctx.K + (row - 1) * num_X;
         const tfloat *R_par = ctx.R + (row - 1) * num_X;
-        const unsigned char *B_row = ctx.B + row * num_X;
         const unsigned bitpos = unique_depth - 1;
         const tfloat zf = parent_zero_fraction;
-        for (unsigned m = 0; m < num_X; ++m) {
-            const unsigned b = B_row[m];
-            K_row[m] = K_par[m] | (b << bitpos);                 // bit add iff one_fraction != 0
-            R_row[m] = b ? R_par[m] : R_par[m] * zf;             // residual mult iff one_fraction != 1
+        if (branch_inc) {
+            if (branch_right) { FTS_V3_EXTEND(branch_inc[m] & (unsigned)(branch_col[m] > branch_thr)) }
+            else              { FTS_V3_EXTEND(branch_inc[m] & (unsigned)(branch_col[m] <= branch_thr)) }
+        } else {
+            if (branch_right) { FTS_V3_EXTEND((unsigned)(branch_col[m] > branch_thr)) }
+            else              { FTS_V3_EXTEND((unsigned)(branch_col[m] <= branch_thr)) }
         }
     }
 
@@ -1282,25 +1296,16 @@ inline void tree_shap_recursive_v3(const TreeShapV3Context &ctx, unsigned node_i
 
     const tfloat *x_col = ctx.Xt + split_index * num_X;
     const tfloat thr = ctx.thresholds[node_index];
-    unsigned char *B_child = ctx.B + (row + 1) * num_X;
+    const unsigned char *inc = has_dup ? INC_row : NULL;
 
-    // left child: branch bit = incoming bit AND (x <= threshold)
-    if (has_dup) {
-        for (unsigned m = 0; m < num_X; ++m) B_child[m] = INC_row[m] & (unsigned char)(x_col[m] <= thr);
-    } else {
-        for (unsigned m = 0; m < num_X; ++m) B_child[m] = (unsigned char)(x_col[m] <= thr);
-    }
+    // children evaluate their branch bit (incoming AND x<=thr / x>thr) inside
+    // their own extend loop — INC_row at this row stays valid across both
     tree_shap_recursive_v3(ctx, left_index, row + 1, unique_depth + 1, path,
-                           left_zero_fraction * incoming_zero_fraction, split_index);
-
-    // right child: branch bit = incoming bit AND (x > threshold)
-    if (has_dup) {
-        for (unsigned m = 0; m < num_X; ++m) B_child[m] = INC_row[m] & (unsigned char)(x_col[m] > thr);
-    } else {
-        for (unsigned m = 0; m < num_X; ++m) B_child[m] = (unsigned char)(x_col[m] > thr);
-    }
+                           left_zero_fraction * incoming_zero_fraction, split_index,
+                           x_col, thr, false, inc);
     tree_shap_recursive_v3(ctx, right_index, row + 1, unique_depth + 1, path,
-                           right_zero_fraction * incoming_zero_fraction, split_index);
+                           right_zero_fraction * incoming_zero_fraction, split_index,
+                           x_col, thr, true, inc);
 }
 
 
@@ -2204,7 +2209,6 @@ inline void dense_tree_path_dependent(const TreeEnsemble& trees, const Explanati
                 int *duplicated_node_v3 = new int[trees.max_nodes];
                 unsigned *K = new unsigned[(size_t)levels * num_X];
                 tfloat *R = new tfloat[(size_t)levels * num_X];
-                unsigned char *B = new unsigned char[(size_t)levels * num_X];
                 unsigned char *INC = new unsigned char[(size_t)levels * num_X];
                 BatchedPathElement *path = new BatchedPathElement[(levels + 1) * (levels + 2) / 2];
                 int leaf_count;
@@ -2235,11 +2239,11 @@ inline void dense_tree_path_dependent(const TreeEnsemble& trees, const Explanati
                     ctx.duplicated_node = duplicated_node_v3;
                     ctx.Xt = Xt;
                     ctx.phi_t = phi_t;
-                    ctx.K = K; ctx.R = R; ctx.B = B; ctx.INC = INC;
+                    ctx.K = K; ctx.R = R; ctx.INC = INC;
                     ctx.path = path;
                     leaf_count = 0;
                     ctx.leaf_count = &leaf_count;
-                    tree_shap_recursive_v3(ctx, 0, 0, 0, path, 1, -1);
+                    tree_shap_recursive_v3(ctx, 0, 0, 0, path, 1, -1, NULL, 0, false, NULL);
                 }
 
                 // merge the transposed thread-local phi into sample-major out_contribs
@@ -2253,7 +2257,7 @@ inline void dense_tree_path_dependent(const TreeEnsemble& trees, const Explanati
                 delete[] phi_t;
                 delete[] combination_sum_v3;
                 delete[] duplicated_node_v3;
-                delete[] K; delete[] R; delete[] B; delete[] INC;
+                delete[] K; delete[] R; delete[] INC;
                 delete[] path;
             }
             delete[] Xt;

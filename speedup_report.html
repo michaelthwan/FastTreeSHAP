@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta http-equiv="refresh" content="10">
+<title>FastTreeSHAP speedup experiments</title>
+<style>
+ body { font-family: Segoe UI, sans-serif; margin: 2em; background: #fafafa; }
+ h1 { font-size: 1.4em; }
+ table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,.15); }
+ th, td { border: 1px solid #ddd; padding: 6px 10px; font-size: 0.9em; text-align: left; }
+ th { background: #2d3748; color: white; position: sticky; top: 0; }
+ tr:nth-child(even) { background: #f4f6f8; }
+ .ok { color: #15803d; font-weight: bold; }
+ .fail { color: #b91c1c; font-weight: bold; }
+ .good { color: #15803d; font-weight: bold; }
+ .bad { color: #b91c1c; }
+ .meta { color: #666; font-size: 0.85em; }
+ .hl { background: #ecfdf5; }
+ .hl2 { background: #eff6ff; }
+ h2 { font-size: 1.1em; margin-top: 1.2em; }
+</style></head><body>
+<h1>FastTreeSHAP speedup experiments — live report</h1>
+<h2>Summary — everything vs native shap package (single core)</h2>
+<p class="meta">Native = upstream shap 0.45.0 TreeExplainer. v2 (original) = FastTreeSHAP before
+this session's optimizations; v2 (optimized) = with them. v3 = batched descent (this fork's new algorithm:
+one traversal per tree, all samples carried as vectors). Same model/data as below; measured 2026-07-02 18:32.</p>
+<table>
+<tr><th>Tree depth</th><th>native shap</th><th>v0</th><th>v1</th><th>v2 (original)</th>
+<th>v2 (optimized)</th><th>v2 (optimized, 24 threads)</th>
+<th>v3 (batched)</th><th>v3 (batched, 24 threads)</th></tr>
+<tr><td>8</td><td>3.53s (1.00x)</td>
+ <td>3.47s <b>(1.02x)</b></td><td>2.59s <b>(1.36x)</b></td><td>1.28s <b>(2.76x)</b></td>
+ <td class="hl">0.92s <b>(3.85x)</b></td><td class="hl">0.09s <b>(39.79x)</b></td>
+ <td class="hl2">0.34s <b>(10.47x)</b></td><td class="hl2">0.03s <b>(118.87x)</b></td></tr><tr><td>12</td><td>24.62s (1.00x)</td>
+ <td>24.84s <b>(0.99x)</b></td><td>16.26s <b>(1.51x)</b></td><td>10.29s <b>(2.39x)</b></td>
+ <td class="hl">7.67s <b>(3.21x)</b></td><td class="hl">0.56s <b>(43.89x)</b></td>
+ <td class="hl2">1.98s <b>(12.42x)</b></td><td class="hl2">0.15s <b>(160.29x)</b></td></tr>
+</table>
+<br>
+<h2>Experiment log</h2>
+<p class="meta">Benchmark: sklearn RandomForestClassifier, 100 trees, max_depth=12,
+2000 Adult samples. Times are medians; speedups are relative to the <b>baseline</b> row
+(same column). Correctness gate: max |diff| vs frozen baseline-v0 reference &le; 1e-8.
+Machine: Ryzen 9 7900X (12c/24t), 32 GB, MSVC 2022. Page auto-refreshes every 10s.
+Last update: 2026-07-02 18:49:11</p>
+<table>
+<tr><th>Time</th><th>Experiment</th><th>Description</th><th>Status</th>
+<th>v0 1-thread</th><th>v1 1-thread</th><th>v2 1-thread</th><th>v2 parallel</th>
+<th>v3 1-thread</th><th>v3 parallel</th>
+<th>max diff</th><th>Notes</th></tr>
+<tr>
+ <td>17:09:45</td><td><b>baseline</b></td><td>Current build: MSVC /O2 /openmp:llvm (as patched earlier)</td>
+ <td class="ok">OK</td>
+ <td>25.13s</td>
+ <td>15.92s <span class="">1.00x</span></td>
+ <td>11.07s <span class="">1.00x</span></td>
+ <td>0.86s <span class="">1.00x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>17:11:30</td><td><b>avx2</b></td><td>MSVC /arch:AVX2 (Zen4 supports AVX2/AVX-512)</td>
+ <td class="ok">OK</td>
+ <td>25.16s</td>
+ <td>16.50s <span class="">0.96x</span></td>
+ <td>10.61s <span class="">1.04x</span></td>
+ <td>0.80s <span class="good">1.08x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>17:12:57</td><td><b>avx2-fpfast</b></td><td>AVX2 + /fp:fast (FP reassociation; correctness gate decides)</td>
+ <td class="ok">OK</td>
+ <td>23.56s</td>
+ <td>15.71s <span class="">1.01x</span></td>
+ <td>10.86s <span class="">1.02x</span></td>
+ <td>0.96s <span class="bad">0.90x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>17:14:22</td><td><b>avx2-inline</b></td><td>AVX2 + aggressive inlining /Ob3 /Oi /Ot /GS-</td>
+ <td class="ok">OK</td>
+ <td>23.74s</td>
+ <td>15.83s <span class="">1.01x</span></td>
+ <td>10.34s <span class="good">1.07x</span></td>
+ <td>0.80s <span class="good">1.08x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.33e-15</td><td></td></tr><tr>
+ <td>17:17:13</td><td><b>v2-incr-ind</b></td><td>Code: incremental combination_sum_ind in v2 recursion (O(1) per leaf instead of O(depth) loop) + AVX2/inline flags</td>
+ <td class="ok">OK</td>
+ <td>25.45s</td>
+ <td>15.98s <span class="">1.00x</span></td>
+ <td>9.24s <span class="good">1.20x</span></td>
+ <td>0.72s <span class="good">1.20x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>17:19:45</td><td><b>omp-dynamic</b></td><td>prev + schedule(dynamic) on parallel tree loops in v2_1/v2_2 (load balancing)</td>
+ <td class="ok">OK</td>
+ <td>24.87s</td>
+ <td>16.33s <span class="">0.97x</span></td>
+ <td>9.64s <span class="good">1.15x</span></td>
+ <td>0.70s <span class="good">1.24x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>17:22:07</td><td><b>v2-no-copy</b></td><td>prev + backtracking path (no per-node O(depth) std::copy in v2 recursion)</td>
+ <td class="ok">OK</td>
+ <td>23.52s</td>
+ <td>16.36s <span class="">0.97x</span></td>
+ <td>8.37s <span class="good">1.32x</span></td>
+ <td>0.66s <span class="good">1.30x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>17:25:16</td><td><b>v2-ctx-struct</b></td><td>prev + context struct: recursion passes 8 args instead of 21 (smaller call frames)</td>
+ <td class="ok">OK</td>
+ <td>24.19s</td>
+ <td>15.95s <span class="">1.00x</span></td>
+ <td>7.38s <span class="good">1.50x</span></td>
+ <td>0.58s <span class="good">1.49x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>17:38:02</td><td><b>v2-iterative</b></td><td>prev + explicit-stack traversal replacing recursion; path/stack buffers on C stack (no per-call heap alloc)</td>
+ <td class="ok">OK</td>
+ <td>23.93s</td>
+ <td>15.47s <span class="">1.03x</span></td>
+ <td>7.83s <span class="good">1.41x</span></td>
+ <td>0.56s <span class="good">1.55x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>17:41:10</td><td><b>v2-alloc-hoist</b></td><td>committed recursive version + stack-allocated path buffer (max_depth+2 slots) and local leaf_count instead of 2 heap allocs per sample x tree</td>
+ <td class="ok">OK</td>
+ <td>23.78s</td>
+ <td>15.50s <span class="">1.03x</span></td>
+ <td>7.56s <span class="good">1.47x</span></td>
+ <td>0.54s <span class="good">1.59x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.10e-15</td><td></td></tr><tr>
+ <td>17:42:54</td><td><b>v2-alloc-hoist-rerun</b></td><td>same build as v2-alloc-hoist, variance check (no rebuild)</td>
+ <td class="ok">OK</td>
+ <td>23.96s</td>
+ <td>15.57s <span class="">1.02x</span></td>
+ <td>7.62s <span class="good">1.45x</span></td>
+ <td>0.55s <span class="good">1.58x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>17:45:23</td><td><b>v2-buffer-reuse</b></td><td>committed version + per-thread path buffer allocated once and passed into tree_shap_v2 (no per-sample-x-tree alloc at all)</td>
+ <td class="ok">OK</td>
+ <td>23.67s</td>
+ <td>15.68s <span class="">1.02x</span></td>
+ <td>7.76s <span class="good">1.43x</span></td>
+ <td>0.59s <span class="good">1.45x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>17:47:16</td><td><b>final-committed</b></td><td>FINAL: committed v2-speedup branch state (62a6ef9) rebuilt and re-verified</td>
+ <td class="ok">OK</td>
+ <td>24.65s</td>
+ <td>16.21s <span class="">0.98x</span></td>
+ <td>7.97s <span class="good">1.39x</span></td>
+ <td>0.57s <span class="good">1.52x</span></td>
+ <td>—</td>
+ <td>—</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>18:15:03</td><td><b>v3-batched-descent</b></td><td>NEW ALGORITHM: batched descent - one traversal per tree, all samples carried as vectors (K/R/B per level); same math, same DFS order</td>
+ <td class="ok">OK</td>
+ <td>22.75s</td>
+ <td>14.39s <span class="good">1.11x</span></td>
+ <td>7.17s <span class="good">1.54x</span></td>
+ <td>0.54s <span class="good">1.58x</span></td>
+ <td>1.91s</td>
+ <td>0.16s</td>
+ <td>9.10e-15</td><td></td></tr><tr>
+ <td>18:29:56</td><td><b>v3-repro</b></td><td>reproduce v3 batched-descent result after session restart (same build flags)</td>
+ <td class="ok">OK</td>
+ <td>22.30s</td>
+ <td>14.79s <span class="good">1.08x</span></td>
+ <td>7.48s <span class="good">1.48x</span></td>
+ <td>0.54s <span class="good">1.60x</span></td>
+ <td>2.02s</td>
+ <td>0.15s</td>
+ <td>9.21e-15</td><td>post-restart reproduction</td></tr><tr>
+ <td>18:45:27</td><td><b>v3-leaf-scale-hoist</b></td><td>v3 leaf loop: per-sample scale computed once per path feature, reused across outputs (output-independent); scratch = free next R level</td>
+ <td class="ok">OK</td>
+ <td>23.13s</td>
+ <td>15.43s <span class="">1.03x</span></td>
+ <td>7.66s <span class="good">1.45x</span></td>
+ <td>0.54s <span class="good">1.59x</span></td>
+ <td>1.86s</td>
+ <td>0.15s</td>
+ <td>9.33e-15</td><td></td></tr><tr>
+ <td>18:47:49</td><td><b>v3-fused-splice</b></td><td>v3 duplicate removal: fuse INC capture + K bit-splice + R divide into one pass over samples (was three)</td>
+ <td class="ok">OK</td>
+ <td>24.59s</td>
+ <td>16.20s <span class="">0.98x</span></td>
+ <td>7.67s <span class="good">1.44x</span></td>
+ <td>0.60s <span class="good">1.44x</span></td>
+ <td>1.87s</td>
+ <td>0.17s</td>
+ <td>9.44e-15</td><td></td></tr>
+</table>
+<p class="meta">v0 = original TreeSHAP, v1/v2 = FastTreeSHAP algorithms. "v2 parallel" = n_jobs=-1 (24 threads).</p>
+</body></html>
