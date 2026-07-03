@@ -200,8 +200,8 @@ a { color: var(--c-v0); text-decoration: none; }
       TOLERANCE ≤ 1e-8 · MEASURED 9.2e-15
     </div>
     <div class="hero-stats">
-      <div class="hstat"><div class="num" id="stat-speed" style="color:var(--c-v3)">13.2×</div><div class="lbl">v3 batched vs native shap · 1 core</div></div>
-      <div class="hstat"><div class="num">≈175×</div><div class="lbl">with 24 threads · depth 12</div></div>
+      <div class="hstat"><div class="num" id="stat-speed" style="color:var(--c-v3)">16.7×</div><div class="lbl">v3 batched vs native shap · 1 core</div></div>
+      <div class="hstat"><div class="num">≈164×</div><div class="lbl">with 24 threads · depth 12</div></div>
       <div class="hstat"><div class="num">9.2e-15</div><div class="lbl">max output diff (fp noise = identical)</div></div>
       <div class="hstat"><div class="num">16</div><div class="lbl">experiments run · 1 new algorithm</div></div>
     </div>
@@ -420,8 +420,8 @@ a { color: var(--c-v0); text-decoration: none; }
       <tr><td>v2 (as published)</td><td>1.28s</td><td>2.84×</td><td>10.29s</td><td>2.55×</td></tr>
       <tr><td>v2 optimized (this fork)</td><td>0.92s</td><td class="win">3.95×</td><td>7.67s</td><td class="win">3.42×</td></tr>
       <tr><td>v2 optimized · 24 threads</td><td>0.09s</td><td class="win">≈40×</td><td>0.56s</td><td class="win">≈47×</td></tr>
-      <tr><td>v3 batched (this fork)</td><td>0.34s</td><td class="win">10.7×</td><td>1.98s</td><td class="win">13.2×</td></tr>
-      <tr><td>v3 batched · 24 threads</td><td>0.03s</td><td class="win">≈121×</td><td>0.15s</td><td class="win">≈175×</td></tr>
+      <tr><td>v3 batched (this fork)</td><td>0.24s</td><td class="win">15.1×</td><td>1.57s</td><td class="win">16.7×</td></tr>
+      <tr><td>v3 batched · 24 threads</td><td>0.04s</td><td class="win">≈91×</td><td>0.16s</td><td class="win">≈164×</td></tr>
     </table>
   </div>
 </section>
@@ -467,7 +467,7 @@ const VERSIONS = [
   { id:"v3", name:"v3 batched", color:"var(--c-v3)", tag:"THIS FORK · NEW ALGORITHM",
     title:"v3 — batched descent: samples as vectors",
     blurb:"Every earlier generation re-walks the tree once per <b>sample</b>. But the path structure — features, fractions, duplicate removals — is sample-independent; only a pass/fail bit per split and a residual are per-sample. So v3 walks each tree <b>once</b>, carrying all samples through the traversal as vectors (K = subset-index bits, R = residuals, B = branch bits), updated in dense loops. Identical arithmetic in identical order → bit-identical output; traversal overhead amortized 2,000× and inner loops the CPU actually likes.",
-    complexity:"O(T·L·2^D + M·T·L·D)", space:"O(L·2^D + D·M)", t12:"1.98s", s12:"13.2×", threads:"n_jobs over trees" },
+    complexity:"O(T·L·2^D + M·T·L·D)", space:"O(L·2^D + D·M)", t12:"1.57s", s12:"16.7×", threads:"n_jobs over trees" },
 ];
 
 // node states per version: s=same, c=changed, a=added, x=not present
@@ -483,7 +483,7 @@ const NODES = {
       v1:"Same parallel-over-samples scheme as v0.",
       v2:"<b>Changed:</b> v2 needs the precomputed table near the loop, so it ships two modes: v2_1 parallelizes over trees (per-thread φ buffers merged at the end), v2_2 splits precompute and explain into two parallel passes. Chosen automatically by a memory check.",
       opt:"<b>Changed:</b> tree loops get <code>schedule(dynamic)</code> for load balancing, and the MSVC build actually enables OpenMP (<code>/openmp:llvm</code>) — stock builds on Windows were silently single-threaded.",
-      v3:"<b>Changed:</b> there is no sample loop to parallelize anymore — threads split the <b>trees</b> (dynamic schedule), each accumulating into its own transposed φ buffer, merged once at the end. 24 threads take depth-12 from 1.98s to 0.15s." } },
+      v3:"<b>Changed:</b> there is no sample loop to parallelize anymore — threads split the <b>trees</b> (dynamic schedule), each accumulating into its own transposed φ buffer, merged once at the end. 24 threads take depth-12 from 1.57s to 0.16s." } },
   n1:{ label:"Precompute combination sums",
     states:{ native:"x", v0:"x", v1:"x", v2:"a", opt:"s", v3:"s" },
     text:{ native:"Doesn't exist — all weight computation happens per sample, inside the hot loop.",
@@ -543,8 +543,8 @@ const NODES = {
 };
 
 const RESULTS = {
-  "12": [ ["native shap", 26.21, "native"], ["v0", 24.84, "v0"], ["v1", 16.26, "v1"], ["v2 (published)", 10.29, "v2"], ["v2 optimized", 7.67, "opt"], ["v3 batched", 1.98, "v3"], ["v3 · 24 thr", 0.15, "v3"] ],
-  "8":  [ ["native shap", 3.63, "native"], ["v0", 3.47, "v0"], ["v1", 2.59, "v1"], ["v2 (published)", 1.28, "v2"], ["v2 optimized", 0.92, "opt"], ["v3 batched", 0.34, "v3"], ["v3 · 24 thr", 0.03, "v3"] ],
+  "12": [ ["native shap", 26.21, "native"], ["v0", 24.84, "v0"], ["v1", 16.26, "v1"], ["v2 (published)", 10.29, "v2"], ["v2 optimized", 7.67, "opt"], ["v3 batched", 1.57, "v3"], ["v3 · 24 thr", 0.16, "v3"] ],
+  "8":  [ ["native shap", 3.63, "native"], ["v0", 3.47, "v0"], ["v1", 2.59, "v1"], ["v2 (published)", 1.28, "v2"], ["v2 optimized", 0.92, "opt"], ["v3 batched", 0.24, "v3"], ["v3 · 24 thr", 0.04, "v3"] ],
 };
 const COLORS = { native:"#8b93a7", v0:"#4da3ff", v1:"#3ddc97", v2:"#ffb454", opt:"#ff5d8f", v3:"#b48bff" };
 
