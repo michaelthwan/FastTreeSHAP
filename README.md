@@ -73,19 +73,6 @@ Every optimization was gated on producing outputs identical to a frozen `shap` r
 
 See [algorithm_report.html](algorithm_report.html) for an interactive walkthrough of all five generations.
 
-## Citation
-
-If this fork helps your research, please cite the original Fast TreeSHAP paper:
-
-```
-@article{yang2021fast,
-  title={Fast TreeSHAP: Accelerating SHAP Value Computation for Trees},
-  author={Yang, Jilei},
-  journal={arXiv preprint arXiv:2109.09847},
-  year={2021}
-}
-```
-
 ## Acknowledgements & License
 
 Built on [linkedin/FastTreeSHAP](https://github.com/linkedin/FastTreeSHAP) by Jilei Yang and the [SHAP](https://github.com/slundberg/shap) package by Scott Lundberg. Original documentation (legacy benchmark tables, notebooks) lives in the upstream repository.
