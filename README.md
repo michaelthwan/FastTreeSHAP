@@ -26,7 +26,7 @@ Speedups grow with tree depth and batch size. Full experiment history (including
 Not yet on PyPI — install from source (requires a C++ compiler; MSVC on Windows, GCC/Clang elsewhere, `brew install libomp` on macOS):
 
 ```sh
-pip install git+https://github.com/michaelthwan/TurboSHAP.git@v2-speedup
+pip install git+https://github.com/michaelthwan/TurboSHAP.git
 ```
 
 ## Usage
