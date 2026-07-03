@@ -1,4 +1,6 @@
-# FastTreeSHAP — performance fork
+# TurboSHAP
+
+*(formerly a FastTreeSHAP fork — import name `turboshap`)*
 
 > Exact TreeSHAP, **13–17× faster than the [`shap`](https://github.com/slundberg/shap) package on a single core** — 100×+ with all cores — while producing SHAP values that are identical to `shap`'s within floating-point noise (measured max difference ~1e-14).
 
@@ -12,7 +14,7 @@ This is a performance-focused fork of [linkedin/FastTreeSHAP](https://github.com
 
 sklearn RandomForestClassifier, 100 trees, 2,000 [Adult](https://archive.ics.uci.edu/ml/datasets/census+income) samples, AMD Ryzen 9 7900X, single core unless noted, vs `shap` 0.45:
 
-|Tree depth|shap (native)|FastTreeSHAP v2 (this fork)|**FastTreeSHAP v3 (this fork)**|v3 · 24 threads|
+|Tree depth|shap (native)|TurboSHAP v2|**TurboSHAP v3**|v3 · 24 threads|
 |---------:|------------:|--------------------------:|------------------------------:|--------------:|
 |8|3.63s|0.92s (4.0×)|**0.24s (15.1×)**|0.04s (~91×)|
 |12|26.21s|7.67s (3.4×)|**1.57s (16.7×)**|0.16s (~164×)|
@@ -32,9 +34,9 @@ pip install git+https://github.com/michaelthwan/FastTreeSHAP.git@v2-speedup
 Drop-in replacement for `shap.TreeExplainer` — same API, same outputs:
 
 ```python
-import fasttreeshap
+import turboshap
 
-explainer = fasttreeshap.TreeExplainer(model, algorithm="v3", n_jobs=-1)
+explainer = turboshap.TreeExplainer(model, algorithm="v3", n_jobs=-1)
 
 shap_values = explainer.shap_values(X)   # ndarray (n_samples, n_features), or a list per class
 explanation = explainer(X)               # Explanation object, works with shap's plotting API
