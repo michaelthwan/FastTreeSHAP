@@ -956,43 +956,58 @@ inline void compute_combination_sum_v2(const TreeEnsemble& tree, tfloat *combina
 }
 
 
+// loop-invariant inputs of the recursive v2 traversal, packed so each recursive
+// call passes a single pointer instead of ~14 unchanging arguments
+struct TreeShapV2Context {
+    unsigned num_outputs;
+    const int *children_left;
+    const int *children_right;
+    const int *features;
+    const tfloat *thresholds;
+    const tfloat *values;
+    const tfloat *node_sample_weight;
+    int max_depth;
+    const tfloat *combination_sum;
+    const int *duplicated_node;
+    const tfloat *x;
+    tfloat *phi;
+    PathElement *unique_path;
+    int *leaf_count;
+};
+
 // recursive computation of SHAP values for a decision tree
-inline void tree_shap_recursive_v2(const unsigned num_outputs, const int *children_left,
-                                   const int *children_right,
-                                   const int *children_default, const int *features,
-                                   const tfloat *thresholds, const tfloat *values,
-                                   const tfloat *node_sample_weight, const int max_depth,
-                                   const tfloat *combination_sum, const int *duplicated_node,
-                                   const tfloat *x, const bool *x_missing, tfloat *phi,
+inline void tree_shap_recursive_v2(const TreeShapV2Context &ctx,
                                    unsigned node_index, unsigned unique_depth,
-                                   PathElement *parent_unique_path, tfloat pweights_residual,
+                                   tfloat pweights_residual,
                                    tfloat parent_zero_fraction, tfloat parent_one_fraction,
-                                   int parent_feature_index, int *leaf_count) {
+                                   int parent_feature_index, unsigned combination_sum_ind) {
+    const unsigned num_outputs = ctx.num_outputs;
+    const tfloat *values = ctx.values;
+    tfloat *phi = ctx.phi;
+    int *leaf_count = ctx.leaf_count;
 
-    // extend the unique path
-    PathElement *unique_path = parent_unique_path + unique_depth;
-    std::copy(parent_unique_path, parent_unique_path + unique_depth, unique_path);
-
+    // extend the unique path in place; instead of copying the parent path at every
+    // node (O(depth) per node) we mutate the shared array and undo any prefix
+    // modification (duplicated-element removal) before returning
+    PathElement *unique_path = ctx.unique_path;
     unique_path[unique_depth].feature_index = parent_feature_index;
     unique_path[unique_depth].zero_fraction = parent_zero_fraction;
     unique_path[unique_depth].one_fraction = parent_one_fraction;
+    // maintain combination_sum_ind incrementally: the element appended at index
+    // unique_depth contributes bit (unique_depth - 1) when its one_fraction is nonzero
+    if (unique_depth > 0 && parent_one_fraction != 0) {
+        combination_sum_ind += 1u << (unique_depth - 1);
+    }
     // update pweights_residual iff the feature of the last split does not satisfy the threshold
     if (parent_one_fraction != 1) {
         pweights_residual *= parent_zero_fraction;
     }
 
-    const unsigned split_index = features[node_index];
+    const unsigned split_index = ctx.features[node_index];
 
     // leaf node
-    if (children_right[node_index] < 0) {
-        const tfloat *leaf_combination_sum = combination_sum + leaf_count[0] * (1 << max_depth);
-        // use combination_sum_ind to search in the row of combination_sum corresponding to the current path
-        unsigned combination_sum_ind = 0;
-        for (unsigned i = 1; i <= unique_depth; ++i) {
-            if (unique_path[i].one_fraction != 0) {
-                combination_sum_ind += 1 << (i - 1);
-            }
-        }
+    if (ctx.children_right[node_index] < 0) {
+        const tfloat *leaf_combination_sum = ctx.combination_sum + leaf_count[0] * (1 << ctx.max_depth);
         // update contributions to SHAP values for features satisfying the thresholds and not satisfying the thresholds separately
         const unsigned values_offset = node_index * num_outputs;
         unsigned values_nonzero_ind = 0;
@@ -1020,20 +1035,22 @@ inline void tree_shap_recursive_v2(const unsigned num_outputs, const int *childr
         leaf_count[0] += 1;
     // internal node
     } else {
-        const unsigned left_index = children_left[node_index];
-        const unsigned right_index = children_right[node_index];
-        const tfloat w = node_sample_weight[node_index];
-        const tfloat left_zero_fraction = node_sample_weight[left_index] / w;
-        const tfloat right_zero_fraction = node_sample_weight[right_index] / w;
+        const unsigned left_index = ctx.children_left[node_index];
+        const unsigned right_index = ctx.children_right[node_index];
+        const tfloat w = ctx.node_sample_weight[node_index];
+        const tfloat left_zero_fraction = ctx.node_sample_weight[left_index] / w;
+        const tfloat right_zero_fraction = ctx.node_sample_weight[right_index] / w;
         tfloat incoming_zero_fraction = 1;
         tfloat incoming_one_fraction = 1;
 
         // see if we have already split on this feature,
         // if so we undo that split so we can redo it for this node
-        const int path_index = duplicated_node[node_index];
+        const int path_index = ctx.duplicated_node[node_index];
+        PathElement removed_element;
         if (path_index >= 0) {
             incoming_zero_fraction = unique_path[path_index].zero_fraction;
             incoming_one_fraction = unique_path[path_index].one_fraction;
+            removed_element = unique_path[path_index];
 
             for (unsigned i = path_index; i < unique_depth; ++i) {
                 unique_path[i].feature_index = unique_path[i + 1].feature_index;
@@ -1041,6 +1058,14 @@ inline void tree_shap_recursive_v2(const unsigned num_outputs, const int *childr
                 unique_path[i].one_fraction = unique_path[i + 1].one_fraction;
             }
             unique_depth -= 1;
+            // remove the duplicated element's bit (path_index - 1) and shift higher bits down
+            if (path_index > 0) {
+                const unsigned low_mask = (1u << (path_index - 1)) - 1;
+                combination_sum_ind = (combination_sum_ind & low_mask) |
+                                      ((combination_sum_ind >> path_index) << (path_index - 1));
+            } else {
+                combination_sum_ind >>= 1;
+            }
             // update pweights_residual iff the duplicated feature does not satisfy the threshold
             if (incoming_one_fraction != 1.) {
                 pweights_residual /= incoming_zero_fraction;
@@ -1048,18 +1073,26 @@ inline void tree_shap_recursive_v2(const unsigned num_outputs, const int *childr
         }
 
         tree_shap_recursive_v2(
-            num_outputs, children_left, children_right, children_default, features, thresholds, values,
-            node_sample_weight, max_depth, combination_sum, duplicated_node, x, x_missing, phi,
-            left_index, unique_depth + 1, unique_path, pweights_residual, left_zero_fraction * incoming_zero_fraction,
-            incoming_one_fraction * int(x[split_index] <= thresholds[node_index]), split_index, leaf_count
+            ctx, left_index, unique_depth + 1, pweights_residual,
+            left_zero_fraction * incoming_zero_fraction,
+            incoming_one_fraction * int(ctx.x[split_index] <= ctx.thresholds[node_index]),
+            split_index, combination_sum_ind
         );
 
         tree_shap_recursive_v2(
-            num_outputs, children_left, children_right, children_default, features, thresholds, values,
-            node_sample_weight, max_depth, combination_sum, duplicated_node, x, x_missing, phi,
-            right_index, unique_depth + 1, unique_path, pweights_residual, right_zero_fraction * incoming_zero_fraction,
-            incoming_one_fraction * int(x[split_index] > thresholds[node_index]), split_index, leaf_count
+            ctx, right_index, unique_depth + 1, pweights_residual,
+            right_zero_fraction * incoming_zero_fraction,
+            incoming_one_fraction * int(ctx.x[split_index] > ctx.thresholds[node_index]),
+            split_index, combination_sum_ind
         );
+
+        // undo the duplicated-element removal so the caller's shared path prefix is restored
+        if (path_index >= 0) {
+            for (int i = (int)unique_depth; i >= path_index; --i) {
+                unique_path[i + 1] = unique_path[i];
+            }
+            unique_path[path_index] = removed_element;
+        }
     }
 }
 
@@ -1077,12 +1110,23 @@ inline void tree_shap_v2(const TreeEnsemble& tree, const tfloat *combination_sum
     int *leaf_count = new int[1];
     leaf_count[0] = 0;
 
-    tree_shap_recursive_v2(
-        tree.num_outputs, tree.children_left, tree.children_right, tree.children_default,
-        tree.features, tree.thresholds, tree.values, tree.node_sample_weights, tree.max_depth,
-        combination_sum, duplicated_node, data.X, data.X_missing, out_contribs, 0, 0,
-        unique_path_data, 1, 1, 1, -1, leaf_count
-    );
+    TreeShapV2Context ctx;
+    ctx.num_outputs = tree.num_outputs;
+    ctx.children_left = tree.children_left;
+    ctx.children_right = tree.children_right;
+    ctx.features = tree.features;
+    ctx.thresholds = tree.thresholds;
+    ctx.values = tree.values;
+    ctx.node_sample_weight = tree.node_sample_weights;
+    ctx.max_depth = tree.max_depth;
+    ctx.combination_sum = combination_sum;
+    ctx.duplicated_node = duplicated_node;
+    ctx.x = data.X;
+    ctx.phi = out_contribs;
+    ctx.unique_path = unique_path_data;
+    ctx.leaf_count = leaf_count;
+
+    tree_shap_recursive_v2(ctx, 0, 0, 1, 1, 1, -1, 0);
 
     delete[] unique_path_data;
     delete[] leaf_count;
@@ -1894,7 +1938,7 @@ inline void dense_tree_path_dependent(const TreeEnsemble& trees, const Explanati
                 combination_sum = new tfloat[max_leaves * max_combinations];
                 duplicated_node = new int[trees.max_nodes];
                 
-                #pragma omp for
+                #pragma omp for schedule(dynamic)
                 for (unsigned j = 0; j < trees.tree_limit; ++j) {
                     trees.get_tree(tree, tree_thread[j]);
                     compute_combination_sum_v2(tree, combination_sum, duplicated_node);
@@ -1938,7 +1982,7 @@ inline void dense_tree_path_dependent(const TreeEnsemble& trees, const Explanati
             // compute combination sum for each tree
             #pragma omp parallel private(tree, combination_sum_local, duplicated_node_local) num_threads(n_jobs)
             {
-                #pragma omp for
+                #pragma omp for schedule(dynamic)
                 for (unsigned j = 0; j < trees.tree_limit; ++j) {
                     combination_sum_local = combination_sum + tree_thread[j] * max_leaves * max_combinations;
                     duplicated_node_local = duplicated_node + tree_thread[j] * trees.max_nodes;
