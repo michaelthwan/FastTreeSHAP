@@ -69,8 +69,8 @@ Measured on the same setup as above:
 
 |Tree Depth|SHAP (native)|FastTreeSHAP v2 (optimized)|FastTreeSHAP v3|Speedup vs native|v3 + 24 threads|
 |---------:|------------:|--------------------------:|--------------:|----------------:|--------------:|
-|8|3.63s|0.92s (3.95x)|0.34s|**10.7x**|0.03s (~121x)|
-|12|26.21s|7.67s (3.42x)|1.98s|**13.2x**|0.15s (~175x)|
+|8|3.63s|0.92s (3.95x)|0.24s|**15.1x**|0.04s (~91x)|
+|12|26.21s|7.67s (3.42x)|1.57s|**16.7x**|0.16s (~164x)|
 
 ```python
 shap_values = fasttreeshap.TreeExplainer(model, algorithm="v3", n_jobs=-1).shap_values(X)

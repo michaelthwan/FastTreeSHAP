@@ -21,7 +21,7 @@
 <h2>Summary — everything vs native shap package (single core)</h2>
 <p class="meta">Native = upstream shap 0.45.0 TreeExplainer. v2 (original) = FastTreeSHAP before
 this session's optimizations; v2 (optimized) = with them. v3 = batched descent (this fork's new algorithm:
-one traversal per tree, all samples carried as vectors). Same model/data as below; measured 2026-07-02 18:32.</p>
+one traversal per tree, all samples carried as vectors). Same model/data as below; measured 2026-07-02 22:11.</p>
 <table>
 <tr><th>Tree depth</th><th>native shap</th><th>v0</th><th>v1</th><th>v2 (original)</th>
 <th>v2 (optimized)</th><th>v2 (optimized, 24 threads)</th>
@@ -29,10 +29,10 @@ one traversal per tree, all samples carried as vectors). Same model/data as belo
 <tr><td>8</td><td>3.53s (1.00x)</td>
  <td>3.47s <b>(1.02x)</b></td><td>2.59s <b>(1.36x)</b></td><td>1.28s <b>(2.76x)</b></td>
  <td class="hl">0.92s <b>(3.85x)</b></td><td class="hl">0.09s <b>(39.79x)</b></td>
- <td class="hl2">0.34s <b>(10.47x)</b></td><td class="hl2">0.03s <b>(118.87x)</b></td></tr><tr><td>12</td><td>24.62s (1.00x)</td>
+ <td class="hl2">0.24s <b>(14.58x)</b></td><td class="hl2">0.04s <b>(99.37x)</b></td></tr><tr><td>12</td><td>24.62s (1.00x)</td>
  <td>24.84s <b>(0.99x)</b></td><td>16.26s <b>(1.51x)</b></td><td>10.29s <b>(2.39x)</b></td>
  <td class="hl">7.67s <b>(3.21x)</b></td><td class="hl">0.56s <b>(43.89x)</b></td>
- <td class="hl2">1.98s <b>(12.42x)</b></td><td class="hl2">0.15s <b>(160.29x)</b></td></tr>
+ <td class="hl2">1.57s <b>(15.71x)</b></td><td class="hl2">0.16s <b>(156.78x)</b></td></tr>
 </table>
 <br>
 <h2>Experiment log</h2>
@@ -40,7 +40,7 @@ one traversal per tree, all samples carried as vectors). Same model/data as belo
 2000 Adult samples. Times are medians; speedups are relative to the <b>baseline</b> row
 (same column). Correctness gate: max |diff| vs frozen baseline-v0 reference &le; 1e-8.
 Machine: Ryzen 9 7900X (12c/24t), 32 GB, MSVC 2022. Page auto-refreshes every 10s.
-Last update: 2026-07-02 21:52:03</p>
+Last update: 2026-07-02 22:12:03</p>
 <table>
 <tr><th>Time</th><th>Experiment</th><th>Description</th><th>Status</th>
 <th>v0 1-thread</th><th>v1 1-thread</th><th>v2 1-thread</th><th>v2 parallel</th>
@@ -217,6 +217,42 @@ Last update: 2026-07-02 21:52:03</p>
  <td>0.60s <span class="good">1.44x</span></td>
  <td>1.60s</td>
  <td>0.15s</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>21:58:54</td><td><b>v3-avx512</b></td><td>flags only: /arch:AVX512 on Zen 4 (branchless leaf loop may engage vector gathers)</td>
+ <td class="ok">OK</td>
+ <td>25.06s</td>
+ <td>16.36s <span class="">0.97x</span></td>
+ <td>7.42s <span class="good">1.49x</span></td>
+ <td>0.57s <span class="good">1.51x</span></td>
+ <td>1.58s</td>
+ <td>0.15s</td>
+ <td>9.33e-15</td><td></td></tr><tr>
+ <td>22:01:44</td><td><b>v3-leaf-intrinsics</b></td><td>v3: AVX2 intrinsics for leaf scale loops (vgatherpd on k & ~bm, blendv c1/-1, explicit mul chain - no FMA); scalar tail + non-AVX2 fallback</td>
+ <td class="ok">OK</td>
+ <td>23.25s</td>
+ <td>15.89s <span class="">1.00x</span></td>
+ <td>7.66s <span class="good">1.45x</span></td>
+ <td>0.57s <span class="good">1.51x</span></td>
+ <td>1.53s</td>
+ <td>0.14s</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>22:03:33</td><td><b>v3-leaf-intrinsics-rerun</b></td><td>same build, variance check (no rebuild)</td>
+ <td class="ok">OK</td>
+ <td>24.53s</td>
+ <td>15.98s <span class="">1.00x</span></td>
+ <td>8.17s <span class="good">1.36x</span></td>
+ <td>0.58s <span class="good">1.49x</span></td>
+ <td>1.69s</td>
+ <td>0.15s</td>
+ <td>9.21e-15</td><td></td></tr><tr>
+ <td>22:08:56</td><td><b>v3-precompute-slim</b></td><td>precompute: per-row valid-prefix copies instead of full-width block copies in combination-sum recursion (dead-traffic elision; benefits v2 and v3)</td>
+ <td class="ok">OK</td>
+ <td>24.71s</td>
+ <td>16.63s <span class="">0.96x</span></td>
+ <td>7.83s <span class="good">1.41x</span></td>
+ <td>0.59s <span class="good">1.47x</span></td>
+ <td>1.68s</td>
+ <td>0.16s</td>
  <td>9.21e-15</td><td></td></tr>
 </table>
 <p class="meta">v0 = original TreeSHAP, v1/v2 = FastTreeSHAP algorithms. "v2 parallel" = n_jobs=-1 (24 threads).</p>
