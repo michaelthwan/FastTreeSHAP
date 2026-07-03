@@ -26,7 +26,7 @@ Speedups grow with tree depth and batch size. Full experiment history (including
 Not yet on PyPI — install from source (requires a C++ compiler; MSVC on Windows, GCC/Clang elsewhere, `brew install libomp` on macOS):
 
 ```sh
-pip install git+https://github.com/michaelthwan/TurboSHAP.git@v2-speedup
+pip install git+https://github.com/michaelthwan/TurboSHAP.git
 ```
 
 ## Usage
@@ -72,19 +72,6 @@ All algorithms produce the same SHAP values; the choice only affects speed and m
 Every optimization was gated on producing outputs identical to a frozen `shap` reference (atol 1e-8; measured ~1e-14) across binary, multiclass, regression, and gradient-boosting models with additivity checks enabled. Changes that reordered *bookkeeping* were allowed; anything that would reorder *arithmetic* (FMA, reciprocal division) was rejected by design.
 
 See [algorithm_report.html](algorithm_report.html) for an interactive walkthrough of all five generations.
-
-## Citation
-
-If this fork helps your research, please cite the original Fast TreeSHAP paper:
-
-```
-@article{yang2021fast,
-  title={Fast TreeSHAP: Accelerating SHAP Value Computation for Trees},
-  author={Yang, Jilei},
-  journal={arXiv preprint arXiv:2109.09847},
-  year={2021}
-}
-```
 
 ## Acknowledgements & License
 
