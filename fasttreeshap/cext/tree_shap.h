@@ -38,6 +38,7 @@ namespace ALGORITHM {
     const unsigned v2 = 2;
     const unsigned v2_1 = 3;
     const unsigned v2_2 = 4;
+    const unsigned v3 = 6;   // batched descent: one traversal per tree, samples as vectors
 }
 
 struct TreeEnsemble {
@@ -1133,6 +1134,162 @@ inline void tree_shap_v2(const TreeEnsemble& tree, const tfloat *combination_sum
 }
 
 
+// ---------------------------------------------------------------------------
+// "v3" batched descent
+//
+// v0/v1/v2 all re-walk the tree once per sample. But along any root-to-leaf
+// path the path structure (features, zero fractions, duplicate removals) is
+// sample-independent — the only per-sample state is one pass/fail bit per
+// split and a running residual. So v3 walks each tree ONCE, carrying every
+// sample through the traversal as vectors: the subset-index bits (K), the
+// pweights residual (R), and the branch bits (B) are arrays over samples,
+// updated with dense loops instead of a recursion per sample. It applies the
+// identical per-sample arithmetic in the identical DFS order as v2, so the
+// output is bit-identical; the win is amortized traversal, branch-free inner
+// loops, and cache-friendly access. Complexity matches v2: O(TL2^D + MTLD).
+// ---------------------------------------------------------------------------
+
+struct BatchedPathElement {
+    int feature_index;
+    tfloat zero_fraction;
+};
+
+struct TreeShapV3Context {
+    unsigned num_X;              // samples in the batch
+    unsigned num_outputs;
+    const int *children_left;
+    const int *children_right;
+    const int *features;
+    const tfloat *thresholds;
+    const tfloat *values;
+    const tfloat *node_sample_weight;
+    int max_depth;
+    const tfloat *combination_sum;
+    const int *duplicated_node;
+    const tfloat *Xt;            // transposed inputs, feature-major: Xt[f * num_X + m]
+    tfloat *phi_t;               // transposed phi: phi_t[(f * num_outputs + j) * num_X + m]
+    unsigned *K;                 // per recursion level: subset-index bits per sample
+    tfloat *R;                   // per recursion level: pweights residual per sample
+    unsigned char *B;            // per recursion level: branch bit per sample
+    unsigned char *INC;          // per recursion level: incoming (duplicate) bit per sample
+    BatchedPathElement *path;    // triangular scalar path buffer (copied per node; once per tree)
+    int *leaf_count;
+};
+
+inline void tree_shap_recursive_v3(const TreeShapV3Context &ctx, unsigned node_index,
+                                   unsigned row, unsigned unique_depth,
+                                   BatchedPathElement *parent_path,
+                                   tfloat parent_zero_fraction, int parent_feature_index) {
+    const unsigned num_X = ctx.num_X;
+    unsigned *K_row = ctx.K + row * num_X;
+    tfloat *R_row = ctx.R + row * num_X;
+
+    // extend the scalar path (copy-on-descend: runs once per node per TREE, not per sample)
+    BatchedPathElement *path = parent_path + unique_depth;
+    for (unsigned i = 0; i < unique_depth; ++i) path[i] = parent_path[i];
+    path[unique_depth].feature_index = parent_feature_index;
+    path[unique_depth].zero_fraction = parent_zero_fraction;
+
+    // extend the per-sample vectors from the parent level
+    if (row == 0) {
+        for (unsigned m = 0; m < num_X; ++m) { K_row[m] = 0; R_row[m] = 1; }
+    } else {
+        const unsigned *K_par = ctx.K + (row - 1) * num_X;
+        const tfloat *R_par = ctx.R + (row - 1) * num_X;
+        const unsigned char *B_row = ctx.B + row * num_X;
+        const unsigned bitpos = unique_depth - 1;
+        const tfloat zf = parent_zero_fraction;
+        for (unsigned m = 0; m < num_X; ++m) {
+            const unsigned b = B_row[m];
+            K_row[m] = K_par[m] | (b << bitpos);                 // bit add iff one_fraction != 0
+            R_row[m] = b ? R_par[m] : R_par[m] * zf;             // residual mult iff one_fraction != 1
+        }
+    }
+
+    // leaf node
+    if (ctx.children_right[node_index] < 0) {
+        const tfloat *S = ctx.combination_sum + ctx.leaf_count[0] * (1 << ctx.max_depth);
+        const unsigned values_offset = node_index * ctx.num_outputs;
+        for (unsigned i = 1; i <= unique_depth; ++i) {
+            const unsigned f = path[i].feature_index;
+            const unsigned bm = 1u << (i - 1);
+            const tfloat c1 = 1 - path[i].zero_fraction;
+            for (unsigned j = 0; j < ctx.num_outputs; ++j) {
+                const tfloat v = ctx.values[values_offset + j];
+                if (v == 0) continue;                            // adding 0.0 is a no-op; skip the pass
+                tfloat *phi_f = ctx.phi_t + (f * ctx.num_outputs + j) * num_X;
+                for (unsigned m = 0; m < num_X; ++m) {
+                    const unsigned k = K_row[m];
+                    const tfloat scale = (k & bm) ? S[k - bm] * R_row[m] * c1
+                                                  : -S[k] * R_row[m];
+                    phi_f[m] += scale * v;
+                }
+            }
+        }
+        ctx.leaf_count[0] += 1;
+        return;
+    }
+
+    // internal node
+    const unsigned split_index = ctx.features[node_index];
+    const unsigned left_index = ctx.children_left[node_index];
+    const unsigned right_index = ctx.children_right[node_index];
+    const tfloat w = ctx.node_sample_weight[node_index];
+    const tfloat left_zero_fraction = ctx.node_sample_weight[left_index] / w;
+    const tfloat right_zero_fraction = ctx.node_sample_weight[right_index] / w;
+    tfloat incoming_zero_fraction = 1;
+
+    unsigned char *INC_row = ctx.INC + row * num_X;
+    const int path_index = ctx.duplicated_node[node_index];
+    bool has_dup = (path_index >= 0);
+    if (has_dup) {
+        incoming_zero_fraction = path[path_index].zero_fraction;
+        const unsigned inc_bm = 1u << (path_index - 1);
+
+        // capture the per-sample incoming bit BEFORE splicing it out of K
+        for (unsigned m = 0; m < num_X; ++m) INC_row[m] = (K_row[m] & inc_bm) ? 1 : 0;
+
+        // remove the duplicated element from the scalar path (local copy — no undo needed)
+        for (unsigned i = path_index; i < unique_depth; ++i) path[i] = path[i + 1];
+        unique_depth -= 1;
+
+        // splice the duplicated bit out of every sample's subset index
+        const unsigned low_mask = inc_bm - 1;
+        for (unsigned m = 0; m < num_X; ++m) {
+            const unsigned k = K_row[m];
+            K_row[m] = (k & low_mask) | ((k >> path_index) << (path_index - 1));
+        }
+        // residual division where the sample failed the duplicated split
+        const tfloat izf = incoming_zero_fraction;
+        for (unsigned m = 0; m < num_X; ++m) {
+            if (!INC_row[m]) R_row[m] /= izf;
+        }
+    }
+
+    const tfloat *x_col = ctx.Xt + split_index * num_X;
+    const tfloat thr = ctx.thresholds[node_index];
+    unsigned char *B_child = ctx.B + (row + 1) * num_X;
+
+    // left child: branch bit = incoming bit AND (x <= threshold)
+    if (has_dup) {
+        for (unsigned m = 0; m < num_X; ++m) B_child[m] = INC_row[m] & (unsigned char)(x_col[m] <= thr);
+    } else {
+        for (unsigned m = 0; m < num_X; ++m) B_child[m] = (unsigned char)(x_col[m] <= thr);
+    }
+    tree_shap_recursive_v3(ctx, left_index, row + 1, unique_depth + 1, path,
+                           left_zero_fraction * incoming_zero_fraction, split_index);
+
+    // right child: branch bit = incoming bit AND (x > threshold)
+    if (has_dup) {
+        for (unsigned m = 0; m < num_X; ++m) B_child[m] = INC_row[m] & (unsigned char)(x_col[m] > thr);
+    } else {
+        for (unsigned m = 0; m < num_X; ++m) B_child[m] = (unsigned char)(x_col[m] > thr);
+    }
+    tree_shap_recursive_v3(ctx, right_index, row + 1, unique_depth + 1, path,
+                           right_zero_fraction * incoming_zero_fraction, split_index);
+}
+
+
 inline unsigned build_merged_tree_recursive(TreeEnsemble &out_tree, const TreeEnsemble &trees,
                                      const tfloat *data, const bool *data_missing, int *data_inds,
                                      const unsigned num_background_data_inds, unsigned num_data_inds,
@@ -2011,6 +2168,83 @@ inline void dense_tree_path_dependent(const TreeEnsemble& trees, const Explanati
             delete[] duplicated_node;
             delete[] tree_thread;
             return;
+
+        case ALGORITHM::v3: {
+            // batched descent: one traversal per tree carrying all samples as vectors.
+            // transpose X once so each split reads a contiguous feature column
+            tfloat *Xt = new tfloat[(size_t)data.M * data.num_X];
+            for (unsigned i = 0; i < data.num_X; ++i) {
+                for (unsigned f = 0; f < data.M; ++f) {
+                    Xt[(size_t)f * data.num_X + i] = data.X[(size_t)i * data.M + f];
+                }
+            }
+
+            #pragma omp parallel private(tree) num_threads(n_jobs)
+            {
+                const unsigned num_X = data.num_X;
+                const unsigned phi_width = (data.M + 1) * trees.num_outputs;
+                const unsigned levels = trees.max_depth + 2;
+                tfloat *phi_t = new tfloat[(size_t)phi_width * num_X];
+                for (size_t q = 0; q < (size_t)phi_width * num_X; ++q) phi_t[q] = 0;
+                tfloat *combination_sum_v3 = new tfloat[max_leaves * max_combinations];
+                int *duplicated_node_v3 = new int[trees.max_nodes];
+                unsigned *K = new unsigned[(size_t)levels * num_X];
+                tfloat *R = new tfloat[(size_t)levels * num_X];
+                unsigned char *B = new unsigned char[(size_t)levels * num_X];
+                unsigned char *INC = new unsigned char[(size_t)levels * num_X];
+                BatchedPathElement *path = new BatchedPathElement[(levels + 1) * (levels + 2) / 2];
+                int leaf_count;
+
+                #pragma omp for schedule(dynamic)
+                for (unsigned j = 0; j < trees.tree_limit; ++j) {
+                    trees.get_tree(tree, j);
+                    compute_combination_sum_v2(tree, combination_sum_v3, duplicated_node_v3);
+
+                    // expected value of this tree goes to the bias column of every sample
+                    for (unsigned jo = 0; jo < tree.num_outputs; ++jo) {
+                        tfloat *bias_row = phi_t + ((size_t)data.M * tree.num_outputs + jo) * num_X;
+                        const tfloat ev = tree.values[jo];
+                        for (unsigned m = 0; m < num_X; ++m) bias_row[m] += ev;
+                    }
+
+                    TreeShapV3Context ctx;
+                    ctx.num_X = num_X;
+                    ctx.num_outputs = tree.num_outputs;
+                    ctx.children_left = tree.children_left;
+                    ctx.children_right = tree.children_right;
+                    ctx.features = tree.features;
+                    ctx.thresholds = tree.thresholds;
+                    ctx.values = tree.values;
+                    ctx.node_sample_weight = tree.node_sample_weights;
+                    ctx.max_depth = tree.max_depth;
+                    ctx.combination_sum = combination_sum_v3;
+                    ctx.duplicated_node = duplicated_node_v3;
+                    ctx.Xt = Xt;
+                    ctx.phi_t = phi_t;
+                    ctx.K = K; ctx.R = R; ctx.B = B; ctx.INC = INC;
+                    ctx.path = path;
+                    leaf_count = 0;
+                    ctx.leaf_count = &leaf_count;
+                    tree_shap_recursive_v3(ctx, 0, 0, 0, path, 1, -1);
+                }
+
+                // merge the transposed thread-local phi into sample-major out_contribs
+                #pragma omp critical
+                for (unsigned i = 0; i < num_X; ++i) {
+                    tfloat *oc = out_contribs + (size_t)i * phi_width;
+                    for (unsigned c = 0; c < phi_width; ++c) {
+                        oc[c] += phi_t[(size_t)c * num_X + i];
+                    }
+                }
+                delete[] phi_t;
+                delete[] combination_sum_v3;
+                delete[] duplicated_node_v3;
+                delete[] K; delete[] R; delete[] B; delete[] INC;
+                delete[] path;
+            }
+            delete[] Xt;
+            return;
+        }
     }
 
     // apply the base offset to the bias term
