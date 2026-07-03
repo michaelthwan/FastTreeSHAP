@@ -1234,9 +1234,12 @@ inline void tree_shap_recursive_v3(const TreeShapV3Context &ctx, unsigned node_i
                 tfloat *phi_f = ctx.phi_t + f * num_X;
                 for (unsigned m = 0; m < num_X; ++m) {
                     const unsigned k = K_row[m];
-                    const tfloat scale = (k & bm) ? S[k - bm] * R_row[m] * c1
-                                                  : -S[k] * R_row[m];
-                    phi_f[m] += scale * v;
+                    // branchless: with bm a single bit, both k-bm (bit set) and k
+                    // (bit clear) equal k & ~bm; the pass/fail factor becomes a
+                    // blended multiplier. (-S)*R == -(S*R) exactly in IEEE, so the
+                    // result is bit-identical to the branchy form.
+                    const tfloat c = (k & bm) ? c1 : (tfloat)-1.0;
+                    phi_f[m] += S[k & ~bm] * R_row[m] * c * v;
                 }
             } else {
                 // scale is output-independent: compute once, reuse for every output.
@@ -1244,8 +1247,9 @@ inline void tree_shap_recursive_v3(const TreeShapV3Context &ctx, unsigned node_i
                 tfloat *scale_row = ctx.R + (row + 1) * num_X;
                 for (unsigned m = 0; m < num_X; ++m) {
                     const unsigned k = K_row[m];
-                    scale_row[m] = (k & bm) ? S[k - bm] * R_row[m] * c1
-                                            : -S[k] * R_row[m];
+                    // branchless form; bit-identical (see the num_outputs == 1 loop)
+                    const tfloat c = (k & bm) ? c1 : (tfloat)-1.0;
+                    scale_row[m] = S[k & ~bm] * R_row[m] * c;
                 }
                 for (unsigned j = 0; j < ctx.num_outputs; ++j) {
                     const tfloat v = ctx.values[values_offset + j];

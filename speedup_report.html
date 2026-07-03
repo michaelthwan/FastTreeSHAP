@@ -40,7 +40,7 @@ one traversal per tree, all samples carried as vectors). Same model/data as belo
 2000 Adult samples. Times are medians; speedups are relative to the <b>baseline</b> row
 (same column). Correctness gate: max |diff| vs frozen baseline-v0 reference &le; 1e-8.
 Machine: Ryzen 9 7900X (12c/24t), 32 GB, MSVC 2022. Page auto-refreshes every 10s.
-Last update: 2026-07-02 18:49:11</p>
+Last update: 2026-07-02 21:52:03</p>
 <table>
 <tr><th>Time</th><th>Experiment</th><th>Description</th><th>Status</th>
 <th>v0 1-thread</th><th>v1 1-thread</th><th>v2 1-thread</th><th>v2 parallel</th>
@@ -199,7 +199,25 @@ Last update: 2026-07-02 18:49:11</p>
  <td>0.60s <span class="good">1.44x</span></td>
  <td>1.87s</td>
  <td>0.17s</td>
- <td>9.44e-15</td><td></td></tr>
+ <td>9.44e-15</td><td></td></tr><tr>
+ <td>21:48:12</td><td><b>head-reassess</b></td><td>reassessment: rebuild at HEAD (39a508e) after cross-session merge, confirm v3 state</td>
+ <td class="ok">OK</td>
+ <td>22.89s</td>
+ <td>14.50s <span class="good">1.10x</span></td>
+ <td>7.11s <span class="good">1.56x</span></td>
+ <td>0.63s <span class="good">1.37x</span></td>
+ <td>1.80s</td>
+ <td>0.16s</td>
+ <td>9.33e-15</td><td></td></tr><tr>
+ <td>21:50:44</td><td><b>v3-branchless-leaf</b></td><td>v3: branchless leaf scale (idx = k & ~bm, blended c1/-1 multiplier) - removes data-dependent branch per sample per path element</td>
+ <td class="ok">OK</td>
+ <td>23.20s</td>
+ <td>15.37s <span class="">1.04x</span></td>
+ <td>7.70s <span class="good">1.44x</span></td>
+ <td>0.60s <span class="good">1.44x</span></td>
+ <td>1.60s</td>
+ <td>0.15s</td>
+ <td>9.21e-15</td><td></td></tr>
 </table>
 <p class="meta">v0 = original TreeSHAP, v1/v2 = FastTreeSHAP algorithms. "v2 parallel" = n_jobs=-1 (24 threads).</p>
 </body></html>
